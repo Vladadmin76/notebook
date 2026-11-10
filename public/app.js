@@ -794,7 +794,14 @@ async function screenAdmin() {
 
 // ---------- запуск ----------
 (async () => {
-  if (tg) { tg.ready(); tg.expand(); }
+  if (tg) {
+    tg.ready(); tg.expand();
+    // Полный экран на телефоне (Bot API 8.0+): без выдвижной шапки Telegram. На компьютере не включаем, чтобы окно не разворачивалось.
+    try {
+      const mobile = tg.platform === 'ios' || tg.platform === 'android';
+      if (mobile && tg.isVersionAtLeast && tg.isVersionAtLeast('8.0') && tg.requestFullscreen && !tg.isFullscreen) tg.requestFullscreen();
+    } catch {}
+  }
   if (!initData) return screenMessage('Блокнот', 'Откройте приложение через Telegram: по ссылке-приглашению или кнопкой «Блокнот» в чате с ботом.');
   const r = await api('/api/me?code=' + encodeURIComponent(startParam));
   if (r.status === 403 && r.data.error === 'blocked') return screenMessage('Блокнот', 'Доступ закрыт.');
