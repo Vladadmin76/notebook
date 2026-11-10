@@ -21,5 +21,5 @@ BOT_USERNAME = "FixTorBlocknot_bot"
 binding = "DB"
 database_name = "notes_db"
 # Подставьте id после `wrangler d1 create notes_db`
-database_id = "REPLACE_WITH_D1_ID"
+database_id = "269770d3-9162-45a2-9274-798ce37ce73e"
 migrations_dir = "migrations"
