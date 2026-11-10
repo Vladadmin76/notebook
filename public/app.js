@@ -29,7 +29,15 @@ function applyTheme(theme) {
 }
 if (tg && tg.onEvent) tg.onEvent('themeChanged', () => { if (!me || me.theme === 'auto') applyTheme('auto'); });
 
-const haptic = () => { try { tg.HapticFeedback.notificationOccurred('success'); } catch {} };
+// Ощутимая вибрация: тяжёлый удар, ещё один, затем «успех» (стили из документации Telegram Mini Apps)
+const haptic = () => {
+  const hf = tg && tg.HapticFeedback;
+  if (!hf) return;
+  const hit = (style) => { try { hf.impactOccurred(style); } catch {} };
+  hit('heavy');
+  setTimeout(() => hit('heavy'), 90);
+  setTimeout(() => { try { hf.notificationOccurred('success'); } catch {} }, 190);
+};
 const confirmBox = (text) => new Promise((res) => {
   if (tg && tg.showConfirm) tg.showConfirm(text, res); else res(confirm(text));
 });
