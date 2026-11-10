@@ -1,0 +1,19 @@
+{
+  "name": "notes-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply notes_db --remote",
+    "db:migrate:local": "wrangler d1 migrations apply notes_db --local",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "grammy": "^1.46.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.160.0"
+  }
+}
