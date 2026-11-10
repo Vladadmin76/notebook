@@ -443,6 +443,8 @@ function screenSettings() {
       <h3>Часовой пояс</h3>
       <p>${esc(me.tz)}${me.tz !== browserTz ? `<br><span class="muted">Устройство сообщает: ${esc(browserTz)}</span>` : ''}</p>
       ${me.tz !== browserTz ? '<button id="tzfix" class="ghost">Взять с устройства</button>' : ''}
+      <h3>Инструменты</h3>
+      <button class="ghost wide" id="pwBtn">🔑 Генератор паролей</button>
       <h3>Бот</h3>
       <p id="botstate">${me.can_write ? '✅ Бот подключён и может писать вам.' : 'Разрешите боту писать вам, чтобы он присылал напоминания и принимал заметки.'}</p>
       ${me.can_write ? '' : '<button id="connect">Подключить бота</button>'}
@@ -450,6 +452,7 @@ function screenSettings() {
     </section>`);
 
   $('back').onclick = back;
+  $('pwBtn').onclick = () => show(screenPasswords);
   $('themes').onclick = async (e) => {
     const v = e.target.dataset && e.target.dataset.v;
     if (!v) return;
@@ -488,6 +491,148 @@ function holdToOpen(el, onTap, onHold) {
   el.addEventListener('click', () => { if (!held) onTap(); held = false; });
   // Запрет системного меню долгого нажатия и выделения (iOS/Android)
   ['contextmenu', 'selectstart', 'dragstart'].forEach((ev) => el.addEventListener(ev, (e) => e.preventDefault()));
+}
+
+// ---------- генератор паролей ----------
+// Пароль создаётся здесь же, на устройстве, и никуда не отправляется. Случайность: crypto.getRandomValues.
+const PW_SETS = {
+  lower: 'abcdefghijklmnopqrstuvwxyz',
+  upper: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  digits: '0123456789',
+  symbols: '!@#$%^&*()-_=+[]{}:;,.?/',
+};
+const PW_MIN = 8, PW_MAX = 120;
+
+function screenPasswords() {
+  h(`${subHeader('Генератор паролей')}
+    <section class="card pg-out">
+      <div id="pgPw" class="pg-pw" tabindex="0" aria-live="polite"></div>
+      <div class="pg-legend" aria-hidden="true"><span>буквы</span><span class="pg-d">цифры</span><span class="pg-s">знаки</span></div>
+      <div class="pg-meter">
+        <div id="pgBars" class="pg-bars" data-level="0"><i></i><i></i><i></i><i></i></div>
+        <div class="pg-mtext"><span>Надёжность: <b id="pgStrength">—</b></span><span id="pgEntropy">—</span></div>
+      </div>
+      <div class="pg-actions"><button id="pgCopy" type="button">Копировать</button><button id="pgNew" class="ghost" type="button" aria-label="Сгенерировать новый пароль">Новый</button></div>
+    </section>
+    <section class="card pg-opts">
+      <div class="pg-lenrow">
+        <div class="pg-lenhead"><label for="pgLenN">Длина пароля</label>
+          <input id="pgLenN" class="pg-num" type="number" min="${PW_MIN}" max="${PW_MAX}" step="1" value="16" inputmode="numeric"></div>
+        <input id="pgLen" type="range" min="${PW_MIN}" max="${PW_MAX}" step="1" value="16">
+        <div class="pg-ends"><span>${PW_MIN}</span><span>${PW_MAX}</span></div>
+      </div>
+      <label class="pg-row"><input id="pgLower" type="checkbox" checked><div class="pg-t">Строчные буквы</div><div class="pg-eg">abc</div></label>
+      <label class="pg-row"><input id="pgUpper" type="checkbox" checked><div class="pg-t">Заглавные буквы</div><div class="pg-eg">ABC</div></label>
+      <label class="pg-row"><input id="pgDigits" type="checkbox" checked><div class="pg-t">Цифры</div><div class="pg-eg">0–9</div></label>
+      <label class="pg-row"><input id="pgSymbols" type="checkbox" checked><div class="pg-t">Специальные знаки</div><div class="pg-eg">!@#$%</div></label>
+      <label class="pg-row"><input id="pgNoRep" type="checkbox" checked><div class="pg-t">Без одинаковых символов подряд<span>Никаких «aa», «11», «!!»</span></div></label>
+    </section>
+    <p id="pgNote" class="err small" role="status"></p>
+    <p class="muted small">Пароль создаётся на вашем устройстве и никуда не отправляется.</p>`);
+  bindBack();
+
+  const pwEl = $('pgPw'), copyBtn = $('pgCopy'), lenR = $('pgLen'), lenN = $('pgLenN'), noRepeat = $('pgNoRep');
+  const opts = { lower: $('pgLower'), upper: $('pgUpper'), digits: $('pgDigits'), symbols: $('pgSymbols') };
+  let current = '', copyTimer = null;
+
+  // Равномерное случайное число от 0 до max-1 без смещения (отбрасываем «лишние» значения)
+  const randInt = (max) => {
+    const limit = Math.floor(4294967296 / max) * max;
+    const buf = new Uint32Array(1);
+    let x;
+    do { crypto.getRandomValues(buf); x = buf[0]; } while (x >= limit);
+    return x % max;
+  };
+  const clampLen = (v) => { v = Math.round(Number(v)); if (!isFinite(v)) v = 16; return Math.min(PW_MAX, Math.max(PW_MIN, v)); };
+  const activeKeys = () => Object.keys(opts).filter((k) => opts[k].checked);
+  const hasClass = (str, set) => [...str].some((c) => set.includes(c));
+
+  function generate(len, keys, avoidRepeat) {
+    const pool = keys.map((k) => PW_SETS[k]).join('');
+    let out = '';
+    for (let attempt = 0; attempt < 5000; attempt++) {
+      const chars = [];
+      let prev = '';
+      for (let i = 0; i < len; i++) {
+        let c;
+        do { c = pool[randInt(pool.length)]; } while (avoidRepeat && c === prev);
+        chars.push(c); prev = c;
+      }
+      out = chars.join('');
+      if (keys.every((k) => hasClass(out, PW_SETS[k]))) break; // в пароле есть символы каждого выбранного набора
+    }
+    return { text: out, poolSize: pool.length };
+  }
+
+  function renderPw(text) {
+    pwEl.textContent = '';
+    for (const ch of text) {
+      const span = document.createElement('span');
+      if (PW_SETS.digits.includes(ch)) span.className = 'pg-d';
+      else if (PW_SETS.symbols.includes(ch)) span.className = 'pg-s';
+      span.textContent = ch;
+      pwEl.appendChild(span);
+    }
+    pwEl.classList.toggle('long', text.length > 40);
+  }
+
+  function updateMeter(len, poolSize, avoidRepeat) {
+    const bits = avoidRepeat ? Math.log2(poolSize) + (len - 1) * Math.log2(poolSize - 1) : len * Math.log2(poolSize);
+    let level, label;
+    if (bits < 50) { level = 1; label = 'слабый'; }
+    else if (bits < 70) { level = 2; label = 'средний'; }
+    else if (bits < 100) { level = 3; label = 'хороший'; }
+    else { level = 4; label = 'отличный'; }
+    $('pgBars').setAttribute('data-level', String(level));
+    $('pgStrength').textContent = label;
+    $('pgEntropy').textContent = `≈ ${Math.round(bits)} бит · ${len} симв.`;
+  }
+
+  const resetCopy = () => { clearTimeout(copyTimer); copyBtn.textContent = 'Копировать'; copyBtn.classList.remove('copied'); };
+  function markCopied(msg) {
+    copyBtn.textContent = msg; copyBtn.classList.add('copied');
+    clearTimeout(copyTimer); copyTimer = setTimeout(resetCopy, 1800);
+  }
+  function fallbackCopy() {
+    try {
+      const range = document.createRange(); range.selectNodeContents(pwEl);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      const ok = document.execCommand && document.execCommand('copy');
+      markCopied(ok ? 'Скопировано' : 'Выделено, нажмите «Копировать»');
+    } catch { markCopied('Выделено, нажмите «Копировать»'); }
+  }
+
+  function run() {
+    const keys = activeKeys();
+    const len = clampLen(lenR.value);
+    const res = generate(len, keys, noRepeat.checked);
+    current = res.text;
+    renderPw(current);
+    updateMeter(len, res.poolSize, noRepeat.checked);
+    resetCopy();
+  }
+
+  copyBtn.onclick = () => {
+    if (!current) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(current).then(() => { markCopied('Скопировано'); haptic1(); }, fallbackCopy);
+    else fallbackCopy();
+  };
+  $('pgNew').onclick = run;
+  lenR.oninput = () => { lenN.value = lenR.value; run(); };
+  lenN.oninput = () => {
+    const raw = Number(lenN.value);
+    if (lenN.value !== '' && raw >= PW_MIN && raw <= PW_MAX) { lenR.value = Math.round(raw); run(); }
+  };
+  lenN.onchange = () => { const v = clampLen(lenN.value); lenN.value = v; lenR.value = v; run(); };
+  Object.keys(opts).forEach((k) => {
+    opts[k].onchange = () => {
+      if (activeKeys().length === 0) { opts[k].checked = true; $('pgNote').textContent = 'Нужен хотя бы один набор символов.'; return; }
+      $('pgNote').textContent = '';
+      run();
+    };
+  });
+  noRepeat.onchange = run;
+  run();
 }
 
 // ---------- панель управления (админ) ----------
