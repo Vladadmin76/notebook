@@ -2,7 +2,7 @@ import * as db from './db.js';
 import { nextRecurrence, parseRrule } from './timeutil.js';
 import { escapeHtml } from './util.js';
 import { utc } from './timeutil.js';
-import { DIGEST_HOUR, INBOX_NAME } from './config.js';
+import { DIGEST_HOUR, DIGEST_WINDOW_HOURS, INBOX_NAME } from './config.js';
 
 const BATCH = 15; // на бесплатном тарифе Workers ограничено число внешних запросов за один вызов
 
@@ -50,7 +50,14 @@ const plural = (n, one, few, many) => {
 };
 export const inboxText = (n) => `📥 Во «Входящих» лежит ${n} ${plural(n, 'неразобранная ссылка', 'неразобранные ссылки', 'неразобранных ссылок')}. Выберите для них папки.`;
 
-// Раз в сутки после 12:00 по местному времени напоминаем о неразобранных ссылках. Когда папка пуста, людей в выборке нет.
+// Время напоминания: с 12:00 до 14:00 по местному времени и не больше одного раза в сутки.
+// Сообщение в 12:00 называет всё, что лежит во «Входящих» на этот момент; ссылку, добавленную позже, бот сразу не «догоняет».
+export function digestDue(local, lastSentOn) {
+  if (local.hour < DIGEST_HOUR || local.hour >= DIGEST_HOUR + DIGEST_WINDOW_HOURS) return false;
+  return lastSentOn !== local.toISODate();
+}
+
+// Раз в сутки в 12:00 по местному времени напоминаем о неразобранных ссылках. Когда папка пуста, людей в выборке нет.
 export async function processInboxDigests(env, api, nowIso = new Date().toISOString()) {
   const D = env.DB;
   const appUrl = env.PUBLIC_URL ?? 'https://notes.fixtorllc.com';
@@ -58,9 +65,8 @@ export async function processInboxDigests(env, api, nowIso = new Date().toISOStr
   for (const u of await db.inboxDigestCandidates(D)) {
     if (sent >= 10) break; // лимит запросов за один вызов
     const local = utc(nowIso).setZone(u.tz);
-    if (local.hour < DIGEST_HOUR) continue;
+    if (!digestDue(local, u.inbox_digest_on)) continue;
     const today = local.toISODate();
-    if (u.inbox_digest_on === today) continue;
     if (!(await db.claimDigest(D, u.id, today))) continue;
     try {
       await api.sendMessage(u.id, inboxText(u.c), { reply_markup: { inline_keyboard: [[{ text: `Открыть «${INBOX_NAME}»`, web_app: { url: `${appUrl}/?open=inbox` } }]] } });
