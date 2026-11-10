@@ -96,3 +96,45 @@ export async function updateSettings(db, id, { tz, theme }) {
 }
 
 export const markCanWrite = (db, id) => db.prepare('UPDATE users SET can_write = 1 WHERE id = ?').bind(id).run();
+
+// ---------- папки и заметки ----------
+
+export const listFolders = (db, userId) =>
+  db.prepare(`SELECT f.id, f.name, COUNT(n.id) AS n FROM folders f
+              LEFT JOIN notes n ON n.folder_id = f.id
+              WHERE f.user_id = ? GROUP BY f.id ORDER BY f.id`).bind(userId).all().then((r) => r.results);
+
+export const getFolderByName = (db, userId, name) =>
+  db.prepare('SELECT * FROM folders WHERE user_id = ? AND name = ? COLLATE NOCASE').bind(userId, name).first();
+
+export async function getOrCreateFolder(db, userId, name) {
+  await db.prepare('INSERT OR IGNORE INTO folders (user_id, name, created_at) VALUES (?, ?, ?)')
+    .bind(userId, name, nowIso()).run();
+  return getFolderByName(db, userId, name);
+}
+
+export async function insertNote(db, { userId, folderId, text, rawText, source = 'text' }) {
+  const now = nowIso();
+  const r = await db.prepare(`INSERT INTO notes (user_id, folder_id, text, raw_text, source, created_at, updated_at)
+                              VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(userId, folderId, text, rawText, source, now, now).run();
+  return r.meta.last_row_id;
+}
+
+// Все запросы по заметкам содержат user_id: чужие заметки недоступны
+export const getNote = (db, userId, id) =>
+  db.prepare(`SELECT n.*, f.name AS folder FROM notes n LEFT JOIN folders f ON f.id = n.folder_id
+              WHERE n.id = ? AND n.user_id = ?`).bind(id, userId).first();
+
+export const listNotes = (db, userId, limit = 10) =>
+  db.prepare(`SELECT n.id, n.text, n.created_at, f.name AS folder FROM notes n
+              LEFT JOIN folders f ON f.id = n.folder_id
+              WHERE n.user_id = ? ORDER BY n.id DESC LIMIT ?`).bind(userId, limit).all().then((r) => r.results);
+
+export const moveNote = (db, userId, noteId, folderId) =>
+  db.prepare(`UPDATE notes SET folder_id = ?, updated_at = ?
+              WHERE id = ? AND user_id = ? AND EXISTS (SELECT 1 FROM folders WHERE id = ? AND user_id = ?)`)
+    .bind(folderId, nowIso(), noteId, userId, folderId, userId).run().then((r) => r.meta.changes === 1);
+
+export const deleteNote = (db, userId, noteId) =>
+  db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').bind(noteId, userId).run().then((r) => r.meta.changes === 1);

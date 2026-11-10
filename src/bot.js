@@ -1,6 +1,8 @@
 import { Bot } from 'grammy';
 import * as db from './db.js';
 import { escapeHtml } from './util.js';
+import { processNote } from './deepseek.js';
+import { LIMITS } from './config.js';
 
 const REFUSAL = 'Бот работает по приглашению. Попросите у владельца ссылку-приглашение и откройте её в Telegram.';
 
@@ -34,7 +36,7 @@ export function createBot(env) {
     ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`, openApp));
 
   bot.command('help', (ctx) => {
-    const base = 'Команды:\n/help — справка';
+    const base = 'Просто напишите заметку: я исправлю текст и разложу по папкам.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/help — справка';
     const admin = '\n\nАдмин:\n/invite Имя — ссылка-приглашение\n/revoke Имя — отозвать приглашение\n' +
       '/users — список людей\n/block Имя\n/unblock Имя\n/remove Имя — удалить человека вместе с данными';
     return ctx.reply(base + (ctx.user.is_admin ? admin : ''));
@@ -118,7 +120,89 @@ export function createBot(env) {
     return ctx.editMessageText(`«${u.label}» удалён вместе с данными.`);
   });
 
-  bot.on('message', (ctx) => ctx.reply('Сохранение заметок появится на следующем этапе.'));
+  // ---------- заметки ----------
+  const FALLBACK_FOLDER = 'Разное';
+  const noteKeyboard = (noteId) => ({ inline_keyboard: [[
+    { text: 'Сменить папку', callback_data: `mvp:${noteId}` },
+    { text: 'Удалить', callback_data: `del:${noteId}` },
+  ]] });
+
+  bot.command('folders', async (ctx) => {
+    const folders = await db.listFolders(D, ctx.user.id);
+    return ctx.reply(folders.map((f) => `📁 ${f.name}: ${f.n}`).join('\n') || 'Папок пока нет.');
+  });
+
+  bot.command('list', async (ctx) => {
+    const notes = await db.listNotes(D, ctx.user.id, 10);
+    if (!notes.length) return ctx.reply('Заметок пока нет. Напишите что-нибудь, и я запишу.');
+    const line = (n) => `• ${n.text.length > 80 ? n.text.slice(0, 80) + '…' : n.text} (${n.folder ?? 'без папки'})`;
+    return ctx.reply(notes.map(line).join('\n'));
+  });
+
+  bot.on('message:voice', (ctx) => ctx.reply('Голосовые заметки появятся на следующем этапе. Пока пишите текстом.'));
+  bot.on('message:audio', (ctx) => ctx.reply('Голосовые заметки появятся на следующем этапе. Пока пишите текстом.'));
+
+  bot.on('message:text', async (ctx) => {
+    const text = ctx.message.text.trim();
+    if (!text || text.startsWith('/')) return; // неизвестная команда не становится заметкой
+    if (text.length > LIMITS.TEXT_MAX_CHARS) {
+      return ctx.reply(`Заметка слишком длинная: ${text.length} знаков, максимум ${LIMITS.TEXT_MAX_CHARS}. Разбейте её на части.`);
+    }
+    await ctx.replyWithChatAction('typing').catch(() => {});
+
+    const folders = (await db.listFolders(D, ctx.user.id)).map((f) => f.name);
+    const result = await processNote(env, text, folders);
+
+    let finalText = text;
+    let folderName = FALLBACK_FOLDER;
+    let failed = true;
+    if (result) {
+      failed = false;
+      finalText = result.text;
+      folderName = result.folder ?? FALLBACK_FOLDER;
+    }
+    const folder = await db.getOrCreateFolder(D, ctx.user.id, folderName);
+    const noteId = await db.insertNote(D, { userId: ctx.user.id, folderId: folder.id, text: finalText, rawText: text });
+
+    const created = result?.isNewFolder ? ' (новая папка)' : '';
+    const msg = failed
+      ? `Записал в папку «${escapeHtml(FALLBACK_FOLDER)}» как есть: не удалось обработать текст, попробуйте позже.`
+      : `Записал в папку «${escapeHtml(folderName)}»${created}:\n<i>${escapeHtml(finalText)}</i>`;
+    return ctx.reply(msg, { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId) });
+  });
+
+  // «Сменить папку»: показываем папки пользователя
+  bot.callbackQuery(/^mvp:(\d+)$/, async (ctx) => {
+    const noteId = Number(ctx.match[1]);
+    const note = await db.getNote(D, ctx.user.id, noteId);
+    if (!note) return ctx.answerCallbackQuery({ text: 'Заметка не найдена' });
+    const folders = await db.listFolders(D, ctx.user.id);
+    const rows = folders.map((f) => [{ text: `${f.id === note.folder_id ? '✓ ' : ''}${f.name}`, callback_data: `mv:${noteId}:${f.id}` }]);
+    rows.push([{ text: 'Отмена', callback_data: `mvc:${noteId}` }]);
+    await ctx.answerCallbackQuery();
+    return ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: rows } });
+  });
+
+  bot.callbackQuery(/^mvc:(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    return ctx.editMessageReplyMarkup({ reply_markup: noteKeyboard(Number(ctx.match[1])) });
+  });
+
+  bot.callbackQuery(/^mv:(\d+):(\d+)$/, async (ctx) => {
+    const [noteId, folderId] = [Number(ctx.match[1]), Number(ctx.match[2])];
+    const ok = await db.moveNote(D, ctx.user.id, noteId, folderId);
+    if (!ok) return ctx.answerCallbackQuery({ text: 'Не получилось' });
+    const note = await db.getNote(D, ctx.user.id, noteId);
+    await ctx.answerCallbackQuery({ text: `Перенёс в «${note.folder}»` });
+    return ctx.editMessageText(`Записал в папку «${escapeHtml(note.folder)}»:\n<i>${escapeHtml(note.text)}</i>`,
+      { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId) });
+  });
+
+  bot.callbackQuery(/^del:(\d+)$/, async (ctx) => {
+    const ok = await db.deleteNote(D, ctx.user.id, Number(ctx.match[1]));
+    await ctx.answerCallbackQuery({ text: ok ? 'Удалено' : 'Уже удалено' });
+    return ctx.editMessageText('Заметка удалена.');
+  });
   bot.catch((err) => console.error('bot error', err.error ?? err));
   return bot;
 }

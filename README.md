@@ -1,7 +1,7 @@
 # Блокнот — Telegram-бот для заметок и напоминаний
 
 Один Cloudflare Worker: Telegram-бот (webhook), веб-страница, таймер напоминаний. Доступ по приглашению.
-Статус: **этап 1 из 6** (каркас: Mini App, приглашения, допуск, управление людьми).
+Статус: **этап 2 из 6** (приглашения, Mini App, управление людьми, текстовые заметки с DeepSeek).
 
 ## Как это устроено
 Приложение — Telegram Mini App: открывается внутри Telegram, Telegram сам сообщает, кто его открыл (подписанные данные `initData`), Worker проверяет подпись по токену бота. Паролей, cookie и ссылок входа нет.
@@ -17,7 +17,7 @@
 2. В @BotFather: `/newbot` (имя «Блокнот»), запомнить токен и username.
 3. `npx wrangler d1 create notes_db` → `database_id` вписать в `wrangler.toml`; туда же `BOT_USERNAME` (без @).
 4. `npm run db:migrate`
-5. Секреты (`npx wrangler secret put ИМЯ`): `TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET` (случайная строка), `CRON_SECRET` (случайная строка), `ADMIN_TELEGRAM_ID` (ID из @userinfobot). `DEEPSEEK_API_KEY` и `GROQ_API_KEY` понадобятся на этапах 2–3.
+5. Секреты (`npx wrangler secret put ИМЯ`): `TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET` (случайная строка), `CRON_SECRET` (случайная строка), `ADMIN_TELEGRAM_ID` (ID из @userinfobot). `DEEPSEEK_API_KEY` (нужен с этапа 2; модель `deepseek-flash`), `GROQ_API_KEY` понадобится на этапе 3.
 6. `npm run deploy` (домен notes.fixtorllc.com привязывается через `routes`).
 7. Webhook, один раз:
    `curl "https://api.telegram.org/bot<ТОКЕН>/setWebhook" -d url=https://notes.fixtorllc.com/tg/webhook -d secret_token=<TG_WEBHOOK_SECRET>`

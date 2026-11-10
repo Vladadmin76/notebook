@@ -1,4 +1,3 @@
-import { webhookCallback } from 'grammy';
 import { createBot } from './bot.js';
 import * as db from './db.js';
 import { validateInitData } from './auth.js';
@@ -6,14 +5,7 @@ import { json, isValidTz } from './util.js';
 
 let cached; // Bot переиспользуется между запросами одного изолята
 function getBot(env) {
-  if (!cached || cached.token !== env.TG_BOT_TOKEN) {
-    const bot = createBot(env);
-    cached = {
-      token: env.TG_BOT_TOKEN,
-      bot,
-      handle: webhookCallback(bot, 'cloudflare-mod', { secretToken: env.TG_WEBHOOK_SECRET }),
-    };
-  }
+  if (!cached || cached.token !== env.TG_BOT_TOKEN) cached = { token: env.TG_BOT_TOKEN, bot: createBot(env) };
   return cached;
 }
 
@@ -140,7 +132,18 @@ export default {
     const path = url.pathname;
 
     if (path === '/tg/webhook' && request.method === 'POST') {
-      return getBot(env).handle(request); // секрет проверяет grammY (401 при несовпадении)
+      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TG_WEBHOOK_SECRET) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+      const update = await request.json().catch(() => null);
+      if (!update) return new Response('Bad Request', { status: 400 });
+      // Отвечаем Telegram сразу (иначе он повторит сообщение), а заметку обрабатываем в фоне
+      const { bot } = getBot(env);
+      ctx.waitUntil((async () => {
+        if (!bot.isInited()) await bot.init();
+        await bot.handleUpdate(update);
+      })().catch((e) => console.error('update error', e)));
+      return new Response('ok');
     }
 
     if (path === '/cron/tick') { // этап 4

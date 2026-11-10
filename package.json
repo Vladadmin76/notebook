@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply notes_db --remote",
     "db:migrate:local": "wrangler d1 migrations apply notes_db --local",
-    "test": "node --test test/auth.test.js"
+    "test": "node --test test/auth.test.js test/deepseek.test.js"
   },
   "dependencies": {
     "grammy": "^1.46.0"
