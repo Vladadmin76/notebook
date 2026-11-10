@@ -136,8 +136,9 @@ export const moveNote = (db, userId, noteId, folderId) =>
               WHERE id = ? AND user_id = ? AND EXISTS (SELECT 1 FROM folders WHERE id = ? AND user_id = ?)`)
     .bind(folderId, nowIso(), noteId, userId, folderId, userId).run().then((r) => r.meta.changes === 1);
 
+// При удалении заметки база каскадом удаляет её напоминания, и счётчик изменённых строк бывает больше 1: считаем успехом любое ненулевое значение
 export const deleteNote = (db, userId, noteId) =>
-  db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').bind(noteId, userId).run().then((r) => r.meta.changes === 1);
+  db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').bind(noteId, userId).run().then((r) => r.meta.changes >= 1);
 
 // ---------- напоминания ----------
 
