@@ -3,6 +3,8 @@ import * as db from './db.js';
 import { escapeHtml } from './util.js';
 import { processNote } from './deepseek.js';
 import { LIMITS } from './config.js';
+import { transcribe } from './groq.js';
+import { downloadFile, TG_DOWNLOAD_LIMIT } from './telegram.js';
 
 const REFUSAL = 'Бот работает по приглашению. Попросите у владельца ссылку-приглашение и откройте её в Telegram.';
 
@@ -139,12 +141,8 @@ export function createBot(env) {
     return ctx.reply(notes.map(line).join('\n'));
   });
 
-  bot.on('message:voice', (ctx) => ctx.reply('Голосовые заметки появятся на следующем этапе. Пока пишите текстом.'));
-  bot.on('message:audio', (ctx) => ctx.reply('Голосовые заметки появятся на следующем этапе. Пока пишите текстом.'));
-
-  bot.on('message:text', async (ctx) => {
-    const text = ctx.message.text.trim();
-    if (!text || text.startsWith('/')) return; // неизвестная команда не становится заметкой
+  // Общая обработка текста заметки (набранного или распознанного из голоса)
+  async function saveNote(ctx, text, source) {
     if (text.length > LIMITS.TEXT_MAX_CHARS) {
       return ctx.reply(`Заметка слишком длинная: ${text.length} знаков, максимум ${LIMITS.TEXT_MAX_CHARS}. Разбейте её на части.`);
     }
@@ -162,14 +160,41 @@ export function createBot(env) {
       folderName = result.folder ?? FALLBACK_FOLDER;
     }
     const folder = await db.getOrCreateFolder(D, ctx.user.id, folderName);
-    const noteId = await db.insertNote(D, { userId: ctx.user.id, folderId: folder.id, text: finalText, rawText: text });
+    const noteId = await db.insertNote(D, { userId: ctx.user.id, folderId: folder.id, text: finalText, rawText: text, source });
 
     const created = result?.isNewFolder ? ' (новая папка)' : '';
     const msg = failed
-      ? `Записал в папку «${escapeHtml(FALLBACK_FOLDER)}» как есть: не удалось обработать текст, попробуйте позже.`
+      ? `Записал в папку «${escapeHtml(FALLBACK_FOLDER)}» как есть: не удалось обработать текст, попробуйте позже.\n<i>${escapeHtml(finalText)}</i>`
       : `Записал в папку «${escapeHtml(folderName)}»${created}:\n<i>${escapeHtml(finalText)}</i>`;
     return ctx.reply(msg, { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId) });
+  }
+
+  bot.on('message:text', async (ctx) => {
+    const text = ctx.message.text.trim();
+    if (!text || text.startsWith('/')) return; // неизвестная команда не становится заметкой
+    return saveNote(ctx, text, 'text');
   });
+
+  // Голосовые и аудио: скачиваем, распознаём в Groq, дальше как обычная заметка
+  async function handleVoice(ctx, media, defaultName, defaultMime) {
+    if ((media.duration ?? 0) > LIMITS.VOICE_MAX_SECONDS) {
+      return ctx.reply(`Голосовое слишком длинное: ${media.duration} с, максимум ${LIMITS.VOICE_MAX_SECONDS} с. Запишите покороче.`);
+    }
+    if ((media.file_size ?? 0) > TG_DOWNLOAD_LIMIT) {
+      return ctx.reply('Файл слишком большой, Telegram не отдаёт такие боту. Запишите покороче.');
+    }
+    await ctx.replyWithChatAction('typing').catch(() => {});
+    const file = await downloadFile(env, ctx.api, media.file_id).catch(() => null);
+    if (!file) return ctx.reply('Не удалось получить голосовое. Попробуйте ещё раз.');
+
+    const text = await transcribe(env, file.bytes, defaultName, media.mime_type ?? defaultMime);
+    if (text === null) return ctx.reply('Не удалось распознать голос. Попробуйте ещё раз или напишите текстом.');
+    if (!text) return ctx.reply('Не разобрал речь в этом сообщении. Попробуйте ещё раз.');
+    return saveNote(ctx, text, 'voice');
+  }
+
+  bot.on('message:voice', (ctx) => handleVoice(ctx, ctx.message.voice, 'voice.ogg', 'audio/ogg'));
+  bot.on('message:audio', (ctx) => handleVoice(ctx, ctx.message.audio, ctx.message.audio.file_name ?? 'audio.mp3', 'audio/mpeg'));
 
   // «Сменить папку»: показываем папки пользователя
   bot.callbackQuery(/^mvp:(\d+)$/, async (ctx) => {
