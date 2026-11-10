@@ -148,16 +148,14 @@ async function screenNotes() {
       <div id="results"></div></div><div id="folders"><p class="muted">Загрузка…</p></div>`);
   const [ov] = await Promise.all([api('/api/overview')]);
   if (!ov.ok) return;
-  const { folders, shopping } = ov.data;
+  const { folders } = ov.data;
   $('folders').innerHTML = folders.map((f) => `<button class="row-card" data-folder="${f.id}" data-name="${esc(f.name)}" data-kind="${esc(f.kind ?? '')}">
       <span>📁 ${esc(f.name)}</span><span class="count">${f.n}</span></button>`).join('')
-    + `<button class="row-card" data-shop="1"><span>🛒 Список покупок</span><span class="count">${shopping.open}</span></button>
-       <button class="ghost wide" id="newFolder">+ Новая папка</button>`;
+    + `<button class="ghost wide" id="newFolder">+ Новая папка</button>`;
   $('folders').onclick = async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.folder) show(() => screenFolder(Number(b.dataset.folder), b.dataset.name, b.dataset.kind || null));
-    else if (b.dataset.shop) tab(screenShopping);
     else if (b.id === 'newFolder') {
       const name = await askText('Название папки');
       if (!name) return;
