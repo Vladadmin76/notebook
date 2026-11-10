@@ -74,16 +74,25 @@ function screenJoin(invite) {
   };
 }
 
-// ---------- главный экран с настройками ----------
+// ---------- главный экран ----------
 function screenMain() {
+  app.onclick = null;
+  h(`<section class="card">
+      <h1>Привет, ${esc(me.label)}!</h1>
+      <p class="muted">Заметки, папки и календарь появятся здесь.</p>
+    </section>
+    <button id="settingsBtn" class="menu nosel">⚙️ Настройки</button>`);
+  // Нажатие открывает настройки, удержание 2 секунды открывает панель управления (только у админа)
+  holdToOpen($('settingsBtn'), screenSettings, me.is_admin ? screenAdmin : null);
+}
+
+// ---------- настройки ----------
+function screenSettings() {
   app.onclick = null;
   const themes = [['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']];
   h(`<section class="card">
-      <h1>Привет, ${esc(me.label)}!</h1>
-      <p class="muted">Заметки, папки и календарь появятся здесь. Пока можно настроить приложение и подключить бота.</p>
-    </section>
-    <section class="card">
-      <h2 id="settingsTitle" class="nosel">Настройки</h2>
+      <button class="ghost back" id="back">← Назад</button>
+      <h2>Настройки</h2>
       <h3>Тема</h3>
       <div class="seg" id="themes">${themes.map(([v, t]) =>
         `<button data-v="${v}" class="${me.theme === v ? 'on' : ''}">${t}</button>`).join('')}</div>
@@ -97,37 +106,41 @@ function screenMain() {
       <p id="err" class="err" hidden></p>
     </section>`);
 
+  $('back').onclick = screenMain;
   $('themes').onclick = async (e) => {
     const v = e.target.dataset && e.target.dataset.v;
     if (!v) return;
     applyTheme(v);
     me.theme = v;
     const r = await api('/api/settings', { theme: v });
-    if (r.ok) { me = r.data.user; screenMain(); }
+    if (r.ok) { me = r.data.user; screenSettings(); }
   };
   if ($('tzfix')) $('tzfix').onclick = async () => {
     const r = await api('/api/settings', { tz: browserTz });
-    if (r.ok) { me = r.data.user; screenMain(); }
+    if (r.ok) { me = r.data.user; screenSettings(); }
   };
   if ($('connect')) $('connect').onclick = () => {
     const finish = async () => {
       const r = await api('/api/connect-bot', {});
-      if (r.ok && r.data.ok) { me = r.data.user; return screenMain(); }
+      if (r.ok && r.data.ok) { me = r.data.user; return screenSettings(); }
       $('err').textContent = 'Бот пока не может вам написать. Откройте чат с ботом, нажмите Start и повторите.';
       $('err').hidden = false;
     };
     if (tg && tg.requestWriteAccess) tg.requestWriteAccess(() => finish()); else finish();
   };
-
-  // Скрытый вход в панель управления: только у админа, удержание заголовка 2 секунды
-  if (me.is_admin) holdToOpen($('settingsTitle'), screenAdmin);
 }
 
-function holdToOpen(el, action) {
+function holdToOpen(el, onTap, onHold) {
   let timer = null;
+  let held = false;
   const cancel = () => { clearTimeout(timer); timer = null; };
-  el.addEventListener('pointerdown', () => { cancel(); timer = setTimeout(() => { timer = null; haptic(); action(); }, HOLD_MS); });
-  ['pointerup', 'pointerleave', 'pointercancel', 'pointermove'].forEach((ev) => el.addEventListener(ev, cancel));
+  el.addEventListener('pointerdown', () => {
+    held = false; cancel();
+    if (onHold) timer = setTimeout(() => { timer = null; held = true; haptic(); onHold(); }, HOLD_MS);
+  });
+  ['pointerleave', 'pointercancel', 'pointermove'].forEach((ev) => el.addEventListener(ev, cancel));
+  el.addEventListener('pointerup', cancel);
+  el.addEventListener('click', () => { if (!held) onTap(); held = false; });
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 

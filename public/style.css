@@ -24,3 +24,4 @@ button:disabled { opacity:.6; } button.ghost { background:transparent; color:var
 .tag.red { background:var(--err); color:#fff; }
 button.back { width:auto; padding:6px 12px; margin:0 0 10px; }
 .link { word-break:break-all; font-size:.85rem; background:var(--bg); padding:10px; border-radius:8px; }
+button.menu { display:block; width:100%; padding:16px; text-align:left; font-size:1.05rem; background:var(--card); color:var(--fg); border:0; border-radius:14px; }
