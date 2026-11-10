@@ -185,3 +185,34 @@ export const cancelNoteReminders = (db, userId, noteId) =>
 export const hasPendingReminder = (db, userId, noteId) =>
   db.prepare(`SELECT 1 AS x FROM reminders WHERE user_id = ? AND note_id = ? AND status = 'pending' LIMIT 1`)
     .bind(userId, noteId).first().then(Boolean);
+
+// ---------- список покупок ----------
+
+// Добавляет пункты; те, что уже есть в списке некупленными, пропускаем. Возвращает { added, existing }.
+export async function addShoppingItems(db, userId, names) {
+  const current = await db.prepare('SELECT name FROM shopping_items WHERE user_id = ? AND done = 0').bind(userId).all()
+    .then((r) => new Set(r.results.map((x) => x.name.toLowerCase())));
+  const added = [], existing = [];
+  const now = nowIso();
+  const stmts = [];
+  for (const name of names) {
+    if (current.has(name.toLowerCase())) { existing.push(name); continue; }
+    current.add(name.toLowerCase());
+    added.push(name);
+    stmts.push(db.prepare('INSERT INTO shopping_items (user_id, name, done, created_at) VALUES (?, ?, 0, ?)').bind(userId, name, now));
+  }
+  if (stmts.length) await db.batch(stmts);
+  return { added, existing };
+}
+
+// Некупленные сверху (в порядке добавления), купленные внизу (недавно купленные выше)
+export const listShopping = (db, userId) =>
+  db.prepare(`SELECT id, name, done FROM shopping_items WHERE user_id = ?
+              ORDER BY done, CASE WHEN done = 0 THEN id END, done_at DESC`).bind(userId).all().then((r) => r.results);
+
+export const toggleShopping = (db, userId, id) =>
+  db.prepare(`UPDATE shopping_items SET done = 1 - done, done_at = CASE WHEN done = 0 THEN ? ELSE NULL END
+              WHERE id = ? AND user_id = ?`).bind(nowIso(), id, userId).run().then((r) => r.meta.changes === 1);
+
+export const clearDoneShopping = (db, userId) =>
+  db.prepare('DELETE FROM shopping_items WHERE user_id = ? AND done = 1').bind(userId).run().then((r) => r.meta.changes);

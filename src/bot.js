@@ -39,7 +39,7 @@ export function createBot(env) {
     ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`, openApp));
 
   bot.command('help', (ctx) => {
-    const base = 'Просто напишите или наговорите заметку: я исправлю текст и разложу по папкам. Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/reminders — будущие напоминания\n/help — справка';
+    const base = 'Просто напишите или наговорите заметки (хоть сразу несколько дел): я исправлю текст, разделю на отдельные заметки и разложу по папкам. Покупки собираю в общий список. Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/buy — список покупок с галочками\n/reminders — будущие напоминания\n/help — справка';
     const admin = '\n\nАдмин:\n/invite Имя — ссылка-приглашение\n/revoke Имя — отозвать приглашение\n' +
       '/users — список людей\n/block Имя\n/unblock Имя\n/remove Имя — удалить человека вместе с данными';
     return ctx.reply(base + (ctx.user.is_admin ? admin : ''));
@@ -143,7 +143,70 @@ export function createBot(env) {
     return ctx.reply(notes.map(line).join('\n'));
   });
 
-  // Общая обработка текста заметки (набранного или распознанного из голоса)
+  // ---------- список покупок ----------
+  const SHOP_LIMIT = 50; // столько пунктов показываем кнопками
+  async function shoppingView(userId) {
+    const items = await db.listShopping(D, userId);
+    if (!items.length) return { text: '🛒 Список покупок пуст.', markup: { inline_keyboard: [] } };
+    const shown = items.slice(0, SHOP_LIMIT);
+    const rows = shown.map((i) => [{ text: `${i.done ? '✅' : '⬜'} ${i.name}`, callback_data: `si:${i.id}` }]);
+    const doneCount = items.filter((i) => i.done).length;
+    if (doneCount) rows.push([{ text: `Очистить купленное (${doneCount})`, callback_data: 'sc' }]);
+    const more = items.length > shown.length ? `\nПоказаны первые ${SHOP_LIMIT} из ${items.length}.` : '';
+    return { text: `🛒 Список покупок. Нажмите на пункт, чтобы отметить купленное.${more}`, markup: { inline_keyboard: rows } };
+  }
+
+  bot.command('buy', async (ctx) => {
+    const v = await shoppingView(ctx.user.id);
+    return ctx.reply(v.text, { reply_markup: v.markup });
+  });
+
+  bot.callbackQuery('sl', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const v = await shoppingView(ctx.user.id);
+    return ctx.reply(v.text, { reply_markup: v.markup });
+  });
+
+  bot.callbackQuery(/^si:(\d+)$/, async (ctx) => {
+    await db.toggleShopping(D, ctx.user.id, Number(ctx.match[1]));
+    await ctx.answerCallbackQuery();
+    const v = await shoppingView(ctx.user.id);
+    return ctx.editMessageText(v.text, { reply_markup: v.markup }).catch(() => {});
+  });
+
+  bot.callbackQuery('sc', async (ctx) => {
+    const n = await db.clearDoneShopping(D, ctx.user.id);
+    await ctx.answerCallbackQuery({ text: n ? `Убрано: ${n}` : 'Нечего убирать' });
+    const v = await shoppingView(ctx.user.id);
+    return ctx.editMessageText(v.text, { reply_markup: v.markup }).catch(() => {});
+  });
+
+  // ---------- разбор сообщения на заметки ----------
+  // Одна заметка: сохраняем, ставим напоминание, отвечаем отдельным сообщением с кнопками
+  async function createNote(ctx, { note, rawText, source, nowIso, failedNote = false }) {
+    const folderName = note.folder ?? FALLBACK_FOLDER;
+    const folder = await db.getOrCreateFolder(D, ctx.user.id, folderName);
+    const noteId = await db.insertNote(D, { userId: ctx.user.id, folderId: folder.id, text: note.text, rawText, source });
+
+    // Напоминание, если модель его нашла и дата получилась разумной
+    const plan = planReminder(note.remind, ctx.user.tz, nowIso);
+    let reminderLine = '';
+    if (plan) {
+      await db.insertReminder(D, { userId: ctx.user.id, noteId, remindAt: plan.remindAt, rrule: plan.rrule, anchorDate: plan.anchorDate,
+        localTime: plan.localTime, tz: plan.tz, text: note.remind.text });
+      const what = note.remind.text ?? note.text;
+      reminderLine = plan.rrule
+        ? `\n⏰ Буду напоминать ${describeRepeat(plan.rrule, plan.localTime)}, первый раз ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`
+        : `\n⏰ Напомню ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`;
+    }
+    const created = note.isNewFolder ? ' (новая папка)' : '';
+    const msg = failedNote
+      ? `Записал в папку «${escapeHtml(FALLBACK_FOLDER)}» как есть: не удалось обработать текст, попробуйте позже.\n<i>${escapeHtml(note.text)}</i>`
+      : `Записал в папку «${escapeHtml(folderName)}»${created}:\n<i>${escapeHtml(note.text)}</i>${reminderLine}`;
+    return ctx.reply(msg, { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId, !!plan) });
+  }
+
+  // Общая обработка текста (набранного или распознанного из голоса)
   async function saveNote(ctx, text, source) {
     if (text.length > LIMITS.TEXT_MAX_CHARS) {
       return ctx.reply(`Заметка слишком длинная: ${text.length} знаков, максимум ${LIMITS.TEXT_MAX_CHARS}. Разбейте её на части.`);
@@ -155,34 +218,24 @@ export function createBot(env) {
     const when = { ...localNowInfo(ctx.user.tz, nowIso), tz: ctx.user.tz };
     const result = await processNote(env, text, folders, when);
 
-    let finalText = text;
-    let folderName = FALLBACK_FOLDER;
-    let failed = true;
-    if (result) {
-      failed = false;
-      finalText = result.text;
-      folderName = result.folder ?? FALLBACK_FOLDER;
-    }
-    const folder = await db.getOrCreateFolder(D, ctx.user.id, folderName);
-    const noteId = await db.insertNote(D, { userId: ctx.user.id, folderId: folder.id, text: finalText, rawText: text, source });
+    // Не получилось разобрать: сохраняем всё как есть одной заметкой
+    if (!result) return createNote(ctx, { note: { text, folder: null, remind: null }, rawText: text, source, nowIso, failedNote: true });
 
-    // Напоминание, если модель его нашла и дата получилась разумной
-    const plan = result ? planReminder(result.remind, ctx.user.tz, nowIso) : null;
-    let reminderLine = '';
-    if (plan) {
-      await db.insertReminder(D, { userId: ctx.user.id, noteId, remindAt: plan.remindAt, rrule: plan.rrule, anchorDate: plan.anchorDate,
-        localTime: plan.localTime, tz: plan.tz, text: result.remind.text });
-      const what = result.remind.text ?? finalText;
-      reminderLine = plan.rrule
-        ? `\n⏰ Буду напоминать ${describeRepeat(plan.rrule, plan.localTime)}, первый раз ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`
-        : `\n⏰ Напомню ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`;
-    }
+    const { notes, shopping } = result;
+    let addedItems = [], existingItems = [];
+    if (shopping.length) ({ added: addedItems, existing: existingItems } = await db.addShoppingItems(D, ctx.user.id, shopping));
 
-    const created = result?.isNewFolder ? ' (новая папка)' : '';
-    const msg = failed
-      ? `Записал в папку «${escapeHtml(FALLBACK_FOLDER)}» как есть: не удалось обработать текст, попробуйте позже.\n<i>${escapeHtml(finalText)}</i>`
-      : `Записал в папку «${escapeHtml(folderName)}»${created}:\n<i>${escapeHtml(finalText)}</i>${reminderLine}`;
-    return ctx.reply(msg, { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId, !!plan) });
+    const parts = notes.length + (shopping.length ? 1 : 0);
+    if (parts > 1) await ctx.reply(`Разобрал на ${parts} ${parts < 5 ? 'заметки' : 'заметок'}:`);
+
+    for (const note of notes) await createNote(ctx, { note, rawText: text, source, nowIso });
+
+    if (shopping.length) {
+      const lines = [];
+      if (addedItems.length) lines.push(`🛒 Добавил в список покупок: ${escapeHtml(addedItems.join(', '))}`);
+      if (existingItems.length) lines.push(`Уже в списке: ${escapeHtml(existingItems.join(', '))}`);
+      await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: 'Открыть список', callback_data: 'sl' }]] } });
+    }
   }
 
   bot.on('message:text', async (ctx, next) => {
