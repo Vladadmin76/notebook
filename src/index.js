@@ -2,6 +2,7 @@ import { createBot } from './bot.js';
 import * as db from './db.js';
 import { validateInitData } from './auth.js';
 import { json, isValidTz } from './util.js';
+import { processTick } from './reminders.js';
 
 let cached; // Bot переиспользуется между запросами одного изолята
 function getBot(env) {
@@ -146,9 +147,11 @@ export default {
       return new Response('ok');
     }
 
-    if (path === '/cron/tick') { // этап 4
-      if (request.headers.get('X-Cron-Secret') !== env.CRON_SECRET) return new Response('Forbidden', { status: 403 });
-      return json({ sent: 0 });
+    if (path === '/cron/tick') { // вызывается внешним таймером (cron-job.org) раз в минуту
+      if (!env.CRON_SECRET || request.headers.get('X-Cron-Secret') !== env.CRON_SECRET) return new Response('Forbidden', { status: 403 });
+      const { bot } = getBot(env);
+      const sent = await processTick(env, bot.api);
+      return json({ sent });
     }
 
     if (path.startsWith('/api/')) return handleApi(request, env, url, ctx);

@@ -138,3 +138,50 @@ export const moveNote = (db, userId, noteId, folderId) =>
 
 export const deleteNote = (db, userId, noteId) =>
   db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').bind(noteId, userId).run().then((r) => r.meta.changes === 1);
+
+// ---------- напоминания ----------
+
+export async function insertReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null }) {
+  const r = await db.prepare(`INSERT INTO reminders (user_id, note_id, remind_at, rrule, anchor_date, local_time, tz, text, status)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`)
+    .bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text).run();
+  return r.meta.last_row_id;
+}
+
+export const dueReminders = (db, nowIso, limit) =>
+  db.prepare(`SELECT r.*, COALESCE(r.text, n.text) AS msg, u.status AS ustatus
+              FROM reminders r JOIN users u ON u.id = r.user_id LEFT JOIN notes n ON n.id = r.note_id
+              WHERE r.status = 'pending' AND r.remind_at <= ? ORDER BY r.remind_at LIMIT ?`)
+    .bind(nowIso, limit).all().then((r) => r.results);
+
+// «Захват» напоминания: сработает только один из параллельных вызовов (сравниваем старое время)
+export const claimReminder = (db, r, nextAt, nowIso) => (nextAt
+  ? db.prepare(`UPDATE reminders SET remind_at = ?, sent_at = ? WHERE id = ? AND status = 'pending' AND remind_at = ?`)
+      .bind(nextAt, nowIso, r.id, r.remind_at)
+  : db.prepare(`UPDATE reminders SET status = 'sent', sent_at = ? WHERE id = ? AND status = 'pending' AND remind_at = ?`)
+      .bind(nowIso, r.id, r.remind_at)
+).run().then((x) => x.meta.changes === 1);
+
+export const revertReminder = (db, r) =>
+  db.prepare(`UPDATE reminders SET status = 'pending', remind_at = ? WHERE id = ?`).bind(r.remind_at, r.id).run();
+
+export const cancelReminder = (db, id) =>
+  db.prepare(`UPDATE reminders SET status = 'cancelled' WHERE id = ?`).bind(id).run();
+
+export const getReminder = (db, userId, id) =>
+  db.prepare(`SELECT r.*, COALESCE(r.text, n.text) AS msg FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
+              WHERE r.id = ? AND r.user_id = ?`).bind(id, userId).first();
+
+export const listPendingReminders = (db, userId, limit = 20) =>
+  db.prepare(`SELECT r.id, r.remind_at, r.rrule, r.local_time, r.tz, COALESCE(r.text, n.text) AS msg
+              FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
+              WHERE r.user_id = ? AND r.status = 'pending' ORDER BY r.remind_at LIMIT ?`)
+    .bind(userId, limit).all().then((r) => r.results);
+
+export const cancelNoteReminders = (db, userId, noteId) =>
+  db.prepare(`UPDATE reminders SET status = 'cancelled' WHERE user_id = ? AND note_id = ? AND status = 'pending'`)
+    .bind(userId, noteId).run().then((r) => r.meta.changes);
+
+export const hasPendingReminder = (db, userId, noteId) =>
+  db.prepare(`SELECT 1 AS x FROM reminders WHERE user_id = ? AND note_id = ? AND status = 'pending' LIMIT 1`)
+    .bind(userId, noteId).first().then(Boolean);

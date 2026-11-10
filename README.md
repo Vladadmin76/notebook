@@ -1,7 +1,7 @@
 # Блокнот — Telegram-бот для заметок и напоминаний
 
 Один Cloudflare Worker: Telegram-бот (webhook), веб-страница, таймер напоминаний. Доступ по приглашению.
-Статус: **этап 3 из 6** (приглашения, Mini App, управление людьми, текстовые и голосовые заметки).
+Статус: **этап 4 из 6** (приглашения, Mini App, управление людьми, текстовые и голосовые заметки, напоминания).
 
 ## Как это устроено
 Приложение — Telegram Mini App: открывается внутри Telegram, Telegram сам сообщает, кто его открыл (подписанные данные `initData`), Worker проверяет подпись по токену бота. Паролей, cookie и ссылок входа нет.
@@ -25,6 +25,13 @@
 9. Кнопка «Блокнот» в чате (один раз):
    `curl "https://api.telegram.org/bot<ТОКЕН>/setChatMenuButton" -H 'content-type: application/json' -d '{"menu_button":{"type":"web_app","text":"Блокнот","web_app":{"url":"https://notes.fixtorllc.com"}}}'`
 10. Откройте `t.me/<бот>?startapp` у себя: приложение предложит познакомиться.
+
+## Напоминания и таймер
+Бот понимает «завтра в 9», «через 3 минуты», «каждый понедельник и среду в 10:30», «раз в две недели по пятницам». Сработавшее напоминание приходит с кнопками «Готово», «Отложить на 1 час», «До завтра 9:00». `/reminders` показывает будущие.
+
+Таймер: бесплатный cron-job.org раз в минуту вызывает `GET https://notes.fixtorllc.com/cron/tick` с заголовком `X-Cron-Secret: <значение секрета CRON_SECRET>` (в cron-job.org: Advanced → Headers). Cron Triggers Cloudflare не используются. Точность до минуты. Ответ `{"sent": N}`.
+
+Миграции применяются при каждом деплое (команда деплоя: `npx wrangler d1 migrations apply notes_db --remote && npx wrangler deploy`).
 
 ## Локальная проверка
 Секреты в `.dev.vars` (в git не попадает), `npm run db:migrate:local`, `npm run dev`, тесты: `npm test`. Вне Telegram приложение покажет просьбу открыть его через Telegram.

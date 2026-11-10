@@ -5,6 +5,7 @@ import { processNote } from './deepseek.js';
 import { LIMITS } from './config.js';
 import { transcribe } from './groq.js';
 import { downloadFile, TG_DOWNLOAD_LIMIT } from './telegram.js';
+import { localNowInfo, planReminder, formatWhen, describeRepeat, snoozeHour, tomorrowNine } from './timeutil.js';
 
 const REFUSAL = 'Бот работает по приглашению. Попросите у владельца ссылку-приглашение и откройте её в Telegram.';
 
@@ -38,7 +39,7 @@ export function createBot(env) {
     ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`, openApp));
 
   bot.command('help', (ctx) => {
-    const base = 'Просто напишите заметку: я исправлю текст и разложу по папкам.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/help — справка';
+    const base = 'Просто напишите или наговорите заметку: я исправлю текст и разложу по папкам. Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/reminders — будущие напоминания\n/help — справка';
     const admin = '\n\nАдмин:\n/invite Имя — ссылка-приглашение\n/revoke Имя — отозвать приглашение\n' +
       '/users — список людей\n/block Имя\n/unblock Имя\n/remove Имя — удалить человека вместе с данными';
     return ctx.reply(base + (ctx.user.is_admin ? admin : ''));
@@ -124,10 +125,11 @@ export function createBot(env) {
 
   // ---------- заметки ----------
   const FALLBACK_FOLDER = 'Разное';
-  const noteKeyboard = (noteId) => ({ inline_keyboard: [[
-    { text: 'Сменить папку', callback_data: `mvp:${noteId}` },
-    { text: 'Удалить', callback_data: `del:${noteId}` },
-  ]] });
+  const noteKeyboard = (noteId, hasReminder = false) => ({ inline_keyboard: [
+    [{ text: 'Сменить папку', callback_data: `mvp:${noteId}` }, { text: 'Удалить', callback_data: `del:${noteId}` }],
+    ...(hasReminder ? [[{ text: 'Убрать напоминание', callback_data: `rr:${noteId}` }]] : []),
+  ] });
+  const noteKeyboardFor = async (userId, noteId) => noteKeyboard(noteId, await db.hasPendingReminder(D, userId, noteId));
 
   bot.command('folders', async (ctx) => {
     const folders = await db.listFolders(D, ctx.user.id);
@@ -149,7 +151,9 @@ export function createBot(env) {
     await ctx.replyWithChatAction('typing').catch(() => {});
 
     const folders = (await db.listFolders(D, ctx.user.id)).map((f) => f.name);
-    const result = await processNote(env, text, folders);
+    const nowIso = new Date().toISOString();
+    const when = { ...localNowInfo(ctx.user.tz, nowIso), tz: ctx.user.tz };
+    const result = await processNote(env, text, folders, when);
 
     let finalText = text;
     let folderName = FALLBACK_FOLDER;
@@ -162,16 +166,29 @@ export function createBot(env) {
     const folder = await db.getOrCreateFolder(D, ctx.user.id, folderName);
     const noteId = await db.insertNote(D, { userId: ctx.user.id, folderId: folder.id, text: finalText, rawText: text, source });
 
+    // Напоминание, если модель его нашла и дата получилась разумной
+    const plan = result ? planReminder(result.remind, ctx.user.tz, nowIso) : null;
+    let reminderLine = '';
+    if (plan) {
+      await db.insertReminder(D, { userId: ctx.user.id, noteId, remindAt: plan.remindAt, rrule: plan.rrule, anchorDate: plan.anchorDate,
+        localTime: plan.localTime, tz: plan.tz, text: result.remind.text });
+      const what = result.remind.text ?? finalText;
+      reminderLine = plan.rrule
+        ? `\n⏰ Буду напоминать ${describeRepeat(plan.rrule, plan.localTime)}, первый раз ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`
+        : `\n⏰ Напомню ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`;
+    }
+
     const created = result?.isNewFolder ? ' (новая папка)' : '';
     const msg = failed
       ? `Записал в папку «${escapeHtml(FALLBACK_FOLDER)}» как есть: не удалось обработать текст, попробуйте позже.\n<i>${escapeHtml(finalText)}</i>`
-      : `Записал в папку «${escapeHtml(folderName)}»${created}:\n<i>${escapeHtml(finalText)}</i>`;
-    return ctx.reply(msg, { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId) });
+      : `Записал в папку «${escapeHtml(folderName)}»${created}:\n<i>${escapeHtml(finalText)}</i>${reminderLine}`;
+    return ctx.reply(msg, { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId, !!plan) });
   }
 
-  bot.on('message:text', async (ctx) => {
+  bot.on('message:text', async (ctx, next) => {
     const text = ctx.message.text.trim();
-    if (!text || text.startsWith('/')) return; // неизвестная команда не становится заметкой
+    if (text.startsWith('/')) return next(); // команды обрабатываются ниже, неизвестная команда не становится заметкой
+    if (!text) return;
     return saveNote(ctx, text, 'text');
   });
 
@@ -210,7 +227,7 @@ export function createBot(env) {
 
   bot.callbackQuery(/^mvc:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    return ctx.editMessageReplyMarkup({ reply_markup: noteKeyboard(Number(ctx.match[1])) });
+    return ctx.editMessageReplyMarkup({ reply_markup: await noteKeyboardFor(ctx.user.id, Number(ctx.match[1])) });
   });
 
   bot.callbackQuery(/^mv:(\d+):(\d+)$/, async (ctx) => {
@@ -220,7 +237,7 @@ export function createBot(env) {
     const note = await db.getNote(D, ctx.user.id, noteId);
     await ctx.answerCallbackQuery({ text: `Перенёс в «${note.folder}»` });
     return ctx.editMessageText(`Записал в папку «${escapeHtml(note.folder)}»:\n<i>${escapeHtml(note.text)}</i>`,
-      { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId) });
+      { parse_mode: 'HTML', reply_markup: await noteKeyboardFor(ctx.user.id, noteId) });
   });
 
   bot.callbackQuery(/^del:(\d+)$/, async (ctx) => {
@@ -228,6 +245,42 @@ export function createBot(env) {
     await ctx.answerCallbackQuery({ text: ok ? 'Удалено' : 'Уже удалено' });
     return ctx.editMessageText('Заметка удалена.');
   });
+
+  // ---------- напоминания ----------
+  bot.command('reminders', async (ctx) => {
+    const list = await db.listPendingReminders(D, ctx.user.id, 20);
+    if (!list.length) return ctx.reply('Будущих напоминаний нет. Напишите, например: «завтра в 9 позвонить Ивану».');
+    const nowIso = new Date().toISOString();
+    const line = (r) => `• ${formatWhen(r.remind_at, ctx.user.tz, nowIso)}${r.rrule ? ` (повтор: ${describeRepeat(r.rrule, r.local_time)})` : ''} — ${r.msg ?? ''}`;
+    return ctx.reply(list.map(line).join('\n'));
+  });
+
+  // «Готово» под сработавшим напоминанием
+  bot.callbackQuery(/^rd:(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery({ text: 'Готово' });
+    const original = ctx.callbackQuery.message?.text ?? '';
+    return ctx.editMessageText(`✅ ${original.replace(/^🔔\s*/, '')}`);
+  });
+
+  // «Отложить»: создаём отдельное разовое напоминание, повторяющаяся серия не страдает
+  bot.callbackQuery(/^rs:(\d+):([ht])$/, async (ctx) => {
+    const r = await db.getReminder(D, ctx.user.id, Number(ctx.match[1]));
+    if (!r) return ctx.answerCallbackQuery({ text: 'Напоминание не найдено' });
+    const nowIso = new Date().toISOString();
+    const at = ctx.match[2] === 'h' ? snoozeHour(nowIso) : tomorrowNine(ctx.user.tz, nowIso);
+    await db.insertReminder(D, { userId: ctx.user.id, noteId: r.note_id, remindAt: at, tz: ctx.user.tz, text: r.text });
+    await ctx.answerCallbackQuery({ text: 'Отложено' });
+    return ctx.editMessageText(`⏰ Отложено до ${formatWhen(at, ctx.user.tz, nowIso)}: ${r.msg ?? ''}`);
+  });
+
+  // «Убрать напоминание» под сообщением о заметке
+  bot.callbackQuery(/^rr:(\d+)$/, async (ctx) => {
+    const noteId = Number(ctx.match[1]);
+    await db.cancelNoteReminders(D, ctx.user.id, noteId);
+    await ctx.answerCallbackQuery({ text: 'Напоминание убрано' });
+    return ctx.editMessageReplyMarkup({ reply_markup: noteKeyboard(noteId, false) });
+  });
+
   bot.catch((err) => console.error('bot error', err.error ?? err));
   return bot;
 }
