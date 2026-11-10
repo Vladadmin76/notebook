@@ -2,14 +2,7 @@ import { Bot } from 'grammy';
 import * as db from './db.js';
 import { escapeHtml } from './util.js';
 
-const REFUSAL = 'Бот работает по приглашению. Попросите у владельца ссылку-приглашение.';
-
-const ERR_TEXT = {
-  unknown: 'Ссылка недействительна. Попросите новое приглашение.',
-  revoked: 'Это приглашение отозвано. Попросите новое.',
-  used: 'Это приглашение уже использовано.',
-  label_taken: 'Пользователь с такой меткой уже есть. Обратитесь к владельцу.',
-};
+const REFUSAL = 'Бот работает по приглашению. Попросите у владельца ссылку-приглашение и откройте её в Telegram.';
 
 export function createBot(env) {
   const bot = new Bot(env.TG_BOT_TOKEN, {
@@ -19,40 +12,26 @@ export function createBot(env) {
   const D = env.DB;
   const adminId = Number(env.ADMIN_TELEGRAM_ID);
 
-  // Единая проверка допуска. Заблокированным отвечаем, но ничего не выполняем.
+  const appUrl = env.PUBLIC_URL ?? 'https://notes.fixtorllc.com';
+  const openApp = { reply_markup: { inline_keyboard: [[{ text: 'Открыть Блокнот', web_app: { url: appUrl } }]] } };
+
+  // Единая проверка допуска. Регистрируются люди только в приложении, не в боте.
   bot.use(async (ctx, next) => {
     const from = ctx.from;
     if (!from || ctx.chat?.type !== 'private') return;
 
-    let user = await db.getUser(D, from.id);
-    if (!user && from.id === adminId) {
-      user = await db.createAdmin(D, from.id, from.first_name ?? null);
-    }
+    const user = await db.getUser(D, from.id);
     ctx.user = user;
-
-    const text = ctx.message?.text ?? '';
-    const isStartWithToken = /^\/start(@\w+)?\s+\S+/.test(text);
-    if (!user && !isStartWithToken) return ctx.reply(REFUSAL);
-    if (user?.status === 'blocked') return ctx.reply('Доступ закрыт.');
+    if (!user) {
+      if (from.id === adminId) return ctx.reply('Сначала откройте приложение и познакомьтесь с ботом.', openApp);
+      return ctx.reply(REFUSAL);
+    }
+    if (user.status === 'blocked') return ctx.reply('Доступ закрыт.');
     return next();
   });
 
-  bot.command('start', async (ctx) => {
-    const token = (ctx.match || '').trim();
-    if (ctx.user) {
-      return ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`);
-    }
-    if (!token) return ctx.reply(REFUSAL);
-
-    const res = await db.redeemClaim(D, token, ctx.from.id, ctx.from.first_name ?? null);
-    if (res.error) return ctx.reply(ERR_TEXT[res.error]);
-    await ctx.reply(
-      `Готово, ${res.user.label}! Часовой пояс: ${res.user.tz}. Создал папки: Идеи, Задачи, Покупки, Разное.\n` +
-      'Скоро здесь можно будет писать и наговаривать заметки.');
-    // Сообщаем админу, что приглашение использовано
-    await bot.api.sendMessage(adminId,
-      `${res.user.label} подключился (${res.user.name ?? 'без имени'}, ${res.user.tz}).`).catch(() => {});
-  });
+  bot.command('start', (ctx) =>
+    ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`, openApp));
 
   bot.command('help', (ctx) => {
     const base = 'Команды:\n/help — справка';
@@ -67,22 +46,21 @@ export function createBot(env) {
     return handler(ctx, (ctx.match || '').trim());
   };
 
-  bot.command('invite', admin(async (ctx, label) => {
-    if (!label) return ctx.reply('Для кого? Например: /invite Олег');
-    if (label.length > 40) return ctx.reply('Имя слишком длинное.');
-    if (await db.findUserByLabel(D, label)) return ctx.reply(`Человек «${label}» уже есть. Выберите другую метку, например «${label} Иванов».`);
-    const code = await db.createInvite(D, label, ctx.user.id);
-    await db.audit(D, ctx.user.id, 'invite', label);
+  bot.command('invite', admin(async (ctx, note) => {
+    if (note.length > 40) return ctx.reply('Подпись слишком длинная.');
+    const code = await db.createInvite(D, note, ctx.user.id);
+    await db.audit(D, ctx.user.id, 'invite', note || null);
     return ctx.reply(
-      `Приглашение для «${label}». Одноразовая ссылка:\n${env.PUBLIC_URL ?? 'https://notes.fixtorllc.com'}/join/${code}`,
+      `Приглашение${note ? ` для «${note}»` : ''}. Одноразовая ссылка, откроется в Telegram:\n` +
+      `https://t.me/${env.BOT_USERNAME}?startapp=${code}`,
       { link_preview_options: { is_disabled: true } });
   }));
 
-  bot.command('revoke', admin(async (ctx, label) => {
-    if (!label) return ctx.reply('Чьё приглашение отозвать? Например: /revoke Олег');
-    const n = await db.revokeInvitesByLabel(D, label);
-    if (n) await db.audit(D, ctx.user.id, 'revoke', label);
-    return ctx.reply(n ? `Отозвано приглашений: ${n}.` : 'Неиспользованных приглашений с такой меткой нет.');
+  bot.command('revoke', admin(async (ctx, note) => {
+    if (!note) return ctx.reply('Чьё приглашение отозвать? Например: /revoke Олег');
+    const n = await db.revokeInvitesByNote(D, note);
+    if (n) await db.audit(D, ctx.user.id, 'revoke', note);
+    return ctx.reply(n ? `Отозвано приглашений: ${n}.` : 'Неиспользованных приглашений с такой подписью нет.');
   }));
 
   bot.command('users', admin(async (ctx) => {
@@ -90,10 +68,9 @@ export function createBot(env) {
     const open = await db.listOpenInvites(D);
     const lines = users.map((u) =>
       `${u.status === 'blocked' ? '⛔' : '✅'} ${escapeHtml(u.label)}${u.is_admin ? ' (админ)' : ''} — ` +
-      `${escapeHtml(u.name ?? 'без имени')}, ${u.tz}`);
+      `${escapeHtml(u.name ?? 'без имени')}, ${u.tz}${u.can_write ? '' : ', бот не подключён'}`);
     if (open.length) {
-      lines.push('', 'Ждут подключения:', ...open.map((i) =>
-        `⏳ ${escapeHtml(i.label)}${i.claimed_at ? ' (открыл ссылку)' : ''}`));
+      lines.push('', 'Приглашения, которые ещё не открыли:', ...open.map((i) => `⏳ ${escapeHtml(i.note || 'без подписи')}`));
     }
     return ctx.reply(lines.join('\n') || 'Пока никого.', { parse_mode: 'HTML' });
   }));
@@ -109,7 +86,7 @@ export function createBot(env) {
   bot.command('block', admin((ctx, label) => withTarget(ctx, label, async (u) => {
     await db.setStatus(D, u.id, 'blocked');
     await db.audit(D, ctx.user.id, 'block', u.label);
-    return ctx.reply(`«${u.label}» отключён. Его сессии закрыты.`);
+    return ctx.reply(`«${u.label}» отключён: бот и приложение ему больше не отвечают.`);
   })));
 
   bot.command('unblock', admin((ctx, label) => withTarget(ctx, label, async (u) => {

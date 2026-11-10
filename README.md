@@ -1,22 +1,29 @@
 # Блокнот — Telegram-бот для заметок и напоминаний
 
 Один Cloudflare Worker: Telegram-бот (webhook), веб-страница, таймер напоминаний. Доступ по приглашению.
-Статус: **этап 1 из 6** (каркас: приглашения, допуск, управление людьми).
+Статус: **этап 1 из 6** (каркас: Mini App, приглашения, допуск, управление людьми).
+
+## Как это устроено
+Приложение — Telegram Mini App: открывается внутри Telegram, Telegram сам сообщает, кто его открыл (подписанные данные `initData`), Worker проверяет подпись по токену бота. Паролей, cookie и ссылок входа нет.
+
+- Приглашение: админ пишет боту `/invite` (или `/invite Олег` с подписью) и получает ссылку `t.me/<бот>?startapp=КОД`. Человек открывает её в Telegram, вводит имя, и ссылка гасится. Дальше он заходит кнопкой «Блокнот» в чате с ботом.
+- Админ (ID из секрета `ADMIN_TELEGRAM_ID`) знакомится с приложением без приглашения.
+- В приложении: тема (светлая/тёмная/как в Telegram), часовой пояс (определяется браузером), кнопка «Подключить бота» (разрешение боту писать).
+- Команды админа в боте: `/invite`, `/revoke`, `/users`, `/block`, `/unblock`, `/remove`.
 
 ## Развёртывание с нуля
 1. `npm install`
-2. Создать бота в @BotFather (`/newbot`), записать токен и username.
-3. `npx wrangler d1 create notes_db` → `database_id` вписать в `wrangler.toml`. Туда же `BOT_USERNAME` (без @).
+2. В @BotFather: `/newbot` (имя «Блокнот»), запомнить токен и username.
+3. `npx wrangler d1 create notes_db` → `database_id` вписать в `wrangler.toml`; туда же `BOT_USERNAME` (без @).
 4. `npm run db:migrate`
-5. Секреты (`npx wrangler secret put ИМЯ`): `TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET` (случайная строка), `CRON_SECRET` (случайная строка), `ADMIN_TELEGRAM_ID` (ваш ID из @userinfobot). `DEEPSEEK_API_KEY` и `GROQ_API_KEY` понадобятся на этапах 2–3.
+5. Секреты (`npx wrangler secret put ИМЯ`): `TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET` (случайная строка), `CRON_SECRET` (случайная строка), `ADMIN_TELEGRAM_ID` (ID из @userinfobot). `DEEPSEEK_API_KEY` и `GROQ_API_KEY` понадобятся на этапах 2–3.
 6. `npm run deploy` (домен notes.fixtorllc.com привязывается через `routes`).
-7. Один раз зарегистрировать webhook:
+7. Webhook, один раз:
    `curl "https://api.telegram.org/bot<ТОКЕН>/setWebhook" -d url=https://notes.fixtorllc.com/tg/webhook -d secret_token=<TG_WEBHOOK_SECRET>`
-
-## Как приглашать
-Админ пишет боту `/invite Олег` → получает одноразовую ссылку. Человек открывает её в браузере, проверяет время и часовой пояс, жмёт «подключить бота» и нажимает Start. Приглашение гасится только в этот момент.
-
-Команды админа: `/invite`, `/revoke`, `/users`, `/block`, `/unblock`, `/remove`.
+8. В @BotFather: **Bot Settings → Configure Mini App → Enable Mini App**, адрес `https://notes.fixtorllc.com`. Это включает прямые ссылки `t.me/<бот>?startapp=...`.
+9. Кнопка «Блокнот» в чате (один раз):
+   `curl "https://api.telegram.org/bot<ТОКЕН>/setChatMenuButton" -H 'content-type: application/json' -d '{"menu_button":{"type":"web_app","text":"Блокнот","web_app":{"url":"https://notes.fixtorllc.com"}}}'`
+10. Откройте `t.me/<бот>?startapp` у себя: приложение предложит познакомиться.
 
 ## Локальная проверка
-Скопируйте секреты в `.dev.vars` (в git не попадает), `npm run db:migrate:local`, `npm run dev`.
+Секреты в `.dev.vars` (в git не попадает), `npm run db:migrate:local`, `npm run dev`, тесты: `npm test`. Вне Telegram приложение покажет просьбу открыть его через Telegram.

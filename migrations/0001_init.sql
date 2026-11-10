@@ -3,8 +3,10 @@
 CREATE TABLE users (
   id          INTEGER PRIMARY KEY,           -- Telegram ID
   name        TEXT,                          -- как человек назван в Telegram
-  label       TEXT NOT NULL,                 -- метка, которую задал админ при приглашении
+  label       TEXT NOT NULL,                 -- имя, которое человек ввёл при знакомстве
   tz          TEXT NOT NULL DEFAULT 'America/Los_Angeles',
+  theme       TEXT NOT NULL DEFAULT 'auto' CHECK (theme IN ('auto','light','dark')),
+  can_write   INTEGER NOT NULL DEFAULT 0,    -- 1, когда бот смог написать человеку
   is_admin    INTEGER NOT NULL DEFAULT 0,
   status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','blocked')),
   created_at  TEXT NOT NULL
@@ -12,15 +14,12 @@ CREATE TABLE users (
 CREATE UNIQUE INDEX idx_users_label ON users(label COLLATE NOCASE);
 
 CREATE TABLE invites (
-  code         TEXT PRIMARY KEY,             -- хвост ссылки /join/КОД
-  label        TEXT NOT NULL,                -- «Олег»
+  code         TEXT PRIMARY KEY,             -- startapp=КОД в ссылке t.me
+  note         TEXT,                         -- «для Олега», необязательная подпись админа
   created_by   INTEGER NOT NULL,
   created_at   TEXT NOT NULL,
   revoked_at   TEXT,
-  claim_token  TEXT UNIQUE,                  -- токен для t.me/бот?start=ТОКЕН, выдаётся по кнопке на странице
-  claim_tz     TEXT,                         -- часовой пояс, определённый в браузере
-  claimed_at   TEXT,
-  used_by      INTEGER,                      -- Telegram ID, когда человек нажал Start
+  used_by      INTEGER,                      -- Telegram ID того, кто открыл и представился
   used_at      TEXT
 );
 
@@ -51,18 +50,11 @@ CREATE TABLE reminders (
   note_id     INTEGER REFERENCES notes(id) ON DELETE CASCADE,
   remind_at   TEXT NOT NULL,
   rrule       TEXT,                          -- правило повторения (RFC 5545), NULL = разовое
-  until_at    TEXT,                          -- дата окончания повторов, необязательно
+  until_at    TEXT,
   status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','cancelled')),
   sent_at     TEXT
 );
 CREATE INDEX idx_reminders_due ON reminders(status, remind_at);
-
-CREATE TABLE sessions (
-  token       TEXT PRIMARY KEY,
-  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  expires_at  TEXT NOT NULL,
-  kind        TEXT NOT NULL CHECK (kind IN ('login','session'))
-);
 
 CREATE TABLE audit (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
