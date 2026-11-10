@@ -92,6 +92,43 @@ async function handleApi(request, env, url, ctx) {
     return json({ ok: true, user: pub(await db.getUser(D, user.id)) });
   }
 
+  // --- панель управления: только админ, проверка на сервере ---
+  if (path.startsWith('/api/admin/')) {
+    if (!user.is_admin) return json({ error: 'forbidden' }, 403);
+    const link = (code) => `https://t.me/${env.BOT_USERNAME}?startapp=${code}`;
+
+    if (path === '/api/admin/overview' && request.method === 'GET') {
+      const [users, invites] = await Promise.all([db.listUsers(D), db.listOpenInvites(D)]);
+      return json({
+        users: users.map((u) => ({ id: u.id, label: u.label, name: u.name, tz: u.tz, is_admin: !!u.is_admin,
+          blocked: u.status === 'blocked', can_write: !!u.can_write })),
+        invites: invites.map((i) => ({ code: i.code, note: i.note, link: link(i.code) })),
+      });
+    }
+    if (path === '/api/admin/invite' && request.method === 'POST') {
+      const note = String(body.note ?? '').trim().slice(0, 40);
+      const code = await db.createInvite(D, note, user.id);
+      await db.audit(D, user.id, 'invite', note || null);
+      return json({ code, note, link: link(code) });
+    }
+    if (path === '/api/admin/revoke' && request.method === 'POST') {
+      const n = await db.revokeInviteByCode(D, String(body.code ?? ''));
+      if (n) await db.audit(D, user.id, 'revoke', String(body.code).slice(0, 6));
+      return json({ ok: n > 0 });
+    }
+    if (['/api/admin/block', '/api/admin/unblock', '/api/admin/remove'].includes(path) && request.method === 'POST') {
+      const target = await db.getUser(D, Number(body.id));
+      if (!target) return json({ error: 'not_found' }, 404);
+      if (target.is_admin) return json({ error: 'cannot_touch_admin' }, 400);
+      const action = path.split('/').pop();
+      if (action === 'remove') await db.removeUser(D, target.id);
+      else await db.setStatus(D, target.id, action === 'block' ? 'blocked' : 'active');
+      await db.audit(D, user.id, action, target.label);
+      return json({ ok: true });
+    }
+    return json({ error: 'not_found' }, 404);
+  }
+
   return json({ error: 'not_found' }, 404);
 }
 

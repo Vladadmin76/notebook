@@ -38,6 +38,13 @@ export const listOpenInvites = (db) =>
   db.prepare('SELECT code, note FROM invites WHERE used_by IS NULL AND revoked_at IS NULL ORDER BY created_at')
     .all().then((r) => r.results);
 
+export async function revokeInviteByCode(db, code) {
+  const r = await db.prepare(
+    `UPDATE invites SET revoked_at = ? WHERE code = ? AND used_by IS NULL AND revoked_at IS NULL`)
+    .bind(nowIso(), code).run();
+  return r.meta.changes;
+}
+
 export async function revokeInvitesByNote(db, note) {
   const r = await db.prepare(
     `UPDATE invites SET revoked_at = ? WHERE note = ? COLLATE NOCASE AND used_by IS NULL AND revoked_at IS NULL`)

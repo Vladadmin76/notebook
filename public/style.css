@@ -13,3 +13,14 @@ button { width:100%; padding:13px; font-size:1rem; border:0; border-radius:10px;
 button:disabled { opacity:.6; } button.ghost { background:transparent; color:var(--accent); border:1px solid var(--accent); }
 .seg { display:flex; gap:6px; } .seg button { margin:0; padding:10px 6px; background:var(--bg); color:var(--fg); border:1px solid var(--line); font-size:.9rem; }
 .seg button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+.nosel { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; touch-action:manipulation; }
+.small { font-size:.85rem; }
+.row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 0; border-top:1px solid var(--line); }
+.row:first-of-type { border-top:0; }
+.who { min-width:0; } .acts { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
+.mini { width:auto; padding:7px 10px; margin:0; font-size:.85rem; }
+.mini.danger, button.danger { background:transparent; color:var(--err); border:1px solid var(--err); }
+.tag { font-size:.7rem; padding:1px 6px; border-radius:6px; background:var(--line); color:var(--muted); vertical-align:middle; }
+.tag.red { background:var(--err); color:#fff; }
+button.back { width:auto; padding:6px 12px; margin:0 0 10px; }
+.link { word-break:break-all; font-size:.85rem; background:var(--bg); padding:10px; border-radius:8px; }
