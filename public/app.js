@@ -519,10 +519,8 @@ const screenMain = () => tab(screenNotes);
 function screenSettings() {
   app.onclick = null;
   const themes = [['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']];
-  h(`<section class="card">
-      <button class="ghost back" id="back">← Назад</button>
-      <h2>Настройки</h2>
-      <h3>Тема</h3>
+  h(`${subHeader('Настройки')}<section class="card">
+      <h3 class="first">Тема</h3>
       <div class="seg" id="themes">${themes.map(([v, t]) =>
         `<button data-v="${v}" class="${me.theme === v ? 'on' : ''}">${t}</button>`).join('')}</div>
       <p class="muted small">«Авто» следует за темой Telegram.</p>
@@ -537,7 +535,7 @@ function screenSettings() {
       <p id="err" class="err" hidden></p>
     </section>`);
 
-  $('back').onclick = back;
+  bindBack();
   $('pwBtn').onclick = () => show(screenPasswords);
   $('themes').onclick = async (e) => {
     const v = e.target.dataset && e.target.dataset.v;
@@ -743,7 +741,7 @@ async function screenAdmin() {
         <button class="mini danger" data-revoke="${esc(i.code)}">Отозвать</button></div>
     </div>`;
 
-  h(`<section class="card"><button class="ghost back" id="back">← Назад</button><h1>Люди</h1>
+  h(`${subHeader('Люди')}<section class="card">
       ${users.map(userRow).join('') || '<p class="muted">Пока никого.</p>'}</section>
     <section class="card"><h2>Приглашения</h2>
       ${invites.map(inviteRow).join('') || '<p class="muted">Нет неиспользованных приглашений.</p>'}
@@ -756,7 +754,7 @@ async function screenAdmin() {
         <button class="ghost" id="sharenew">Отправить в Telegram</button>
       </div></section>`);
 
-  $('back').onclick = back;
+  bindBack();
   const share = (link) => {
     const u = 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent('Приглашение в Блокнот');
     if (tg && tg.openTelegramLink) tg.openTelegramLink(u); else window.open(u, '_blank');

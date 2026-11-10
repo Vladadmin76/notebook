@@ -135,3 +135,7 @@ button.copied { background: var(--good); }
 .chip.add { color: var(--accent); border-style: dashed; background: transparent; }
 .sheet .wide { margin-top: 8px; }
 #listActions .btnrow { margin: 0 0 10px; }
+
+/* Экраны без шапки (знакомство, сообщения, загрузка): отступ от системной зоны в полноэкранном режиме */
+#app > .card:first-child { margin-top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)); }
+.card h3.first { margin-top: 0; }
