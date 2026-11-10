@@ -40,7 +40,9 @@ function parseRemind(r) {
     if (!repeat.weekdays.length) repeat = null;
   }
   if (!at && inMinutes === null && !repeat) return null;
-  const text = typeof r.text === 'string' && r.text.trim() && r.text.length <= 300 ? r.text.trim() : null;
+  let text = typeof r.text === 'string' && r.text.trim() && r.text.length <= 300 ? r.text.trim() : null;
+  // Пустышки вроде «Напоминание» или «Напомнить» ничего не говорят: берём текст заметки
+  if (text && /^напомин\p{L}*[.!]?$/iu.test(text)) text = null;
   return { at, in_minutes: inMinutes, repeat, text };
 }
 

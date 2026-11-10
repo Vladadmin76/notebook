@@ -60,3 +60,8 @@ test('больше 10 заметок: хвост склеивается в по�
 test('выдуманный лишний текст отклоняется', () => {
   assert.equal(parseModelReply(JSON.stringify({ notes: [], shopping: ['Хлеб'.repeat(15)] }), folders, 'х'.repeat(3)), null);
 });
+
+test('пустышка вместо текста напоминания отбрасывается', () => {
+  const r = parseModelReply(JSON.stringify({ text: 'Напомнить через 3 минуты.', folder: 'Задачи', remind: { in_minutes: 3, text: 'Напоминание' } }), folders, 'напомнить через 3 минуты');
+  assert.equal(r.notes[0].remind.text, null);
+});
