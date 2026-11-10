@@ -51,3 +51,10 @@ test('формат даты для ответа', () => {
   assert.equal(formatWhen('2026-11-11T15:00:00.000Z', TZ, NOW), 'завтра в 9:00');
   assert.equal(formatWhen('2026-11-20T15:00:00.000Z', TZ, NOW), '20 ноября в 9:00');
 });
+
+test('«через 2 минуты» округляется до ближайшей минуты', () => {
+  const early = planReminder({ at: null, in_minutes: 2, repeat: null }, TZ, '2026-11-10T19:57:20.000Z'); // 19:59:20 -> 19:59:00
+  const late = planReminder({ at: null, in_minutes: 2, repeat: null }, TZ, '2026-11-10T19:57:50.000Z');  // 19:59:50 -> 20:00:00
+  assert.equal(early.remindAt, '2026-11-10T19:59:00.000Z');
+  assert.equal(late.remindAt, '2026-11-10T20:00:00.000Z');
+});

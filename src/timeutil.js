@@ -64,7 +64,8 @@ export function planReminder(remind, tz, nowIso) {
   }
 
   if (Number.isInteger(remind.in_minutes) && remind.in_minutes > 0 && remind.in_minutes <= 60 * 24 * 365) {
-    return { remindAt: isoUtc(now.plus({ minutes: remind.in_minutes })), tz };
+    // Округляем до ближайшей минуты: таймер срабатывает раз в минуту, так отклонение не больше 30 секунд
+    return { remindAt: isoUtc(now.plus({ minutes: remind.in_minutes, seconds: 30 }).startOf('minute')), tz };
   }
 
   if (remind.at) {
