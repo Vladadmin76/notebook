@@ -15,7 +15,7 @@ run_worker_first = true
 
 [vars]
 # Username бота без @, например FixTorBlocknot_bot (задайте после создания в @BotFather)
-BOT_USERNAME = "REPLACE_ME_bot"
+BOT_USERNAME = "FixTorBlocknot_bot"
 
 [[d1_databases]]
 binding = "DB"
