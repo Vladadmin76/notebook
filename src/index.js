@@ -3,6 +3,8 @@ import * as db from './db.js';
 import { validateInitData } from './auth.js';
 import { json, isValidTz } from './util.js';
 import { processTick } from './reminders.js';
+import { handleAppApi, serveIcs } from './appapi.js';
+import { verifyIcs } from './ics.js';
 
 let cached; // Bot переиспользуется между запросами одного изолята
 function getBot(env) {
@@ -85,6 +87,12 @@ async function handleApi(request, env, url, ctx) {
     return json({ ok: true, user: pub(await db.getUser(D, user.id)) });
   }
 
+  // --- приложение: папки, заметки, календарь, напоминания, покупки ---
+  {
+    const res = await handleAppApi({ request, env, url, user, body });
+    if (res) return res;
+  }
+
   // --- панель управления: только админ, проверка на сервере ---
   if (path.startsWith('/api/admin/')) {
     if (!user.is_admin) return json({ error: 'forbidden' }, 403);
@@ -153,6 +161,8 @@ export default {
       const sent = await processTick(env, bot.api);
       return json({ sent });
     }
+
+    if (path === '/ics' && request.method === 'GET') return serveIcs(env, url, verifyIcs); // ссылка с подписью, без входа через Telegram
 
     if (path.startsWith('/api/')) return handleApi(request, env, url, ctx);
 

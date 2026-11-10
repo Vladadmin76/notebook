@@ -216,3 +216,89 @@ export const toggleShopping = (db, userId, id) =>
 
 export const clearDoneShopping = (db, userId) =>
   db.prepare('DELETE FROM shopping_items WHERE user_id = ? AND done = 1').bind(userId).run().then((r) => r.meta.changes);
+
+// ---------- приложение: папки, заметки, покупки ----------
+
+export const countShopping = (db, userId) =>
+  db.prepare('SELECT COALESCE(SUM(done = 0), 0) AS open, COALESCE(SUM(done = 1), 0) AS done FROM shopping_items WHERE user_id = ?')
+    .bind(userId).first();
+
+export const getFolder = (db, userId, id) =>
+  db.prepare('SELECT * FROM folders WHERE id = ? AND user_id = ?').bind(id, userId).first();
+
+export async function createFolder(db, userId, name) {
+  try {
+    const r = await db.prepare('INSERT INTO folders (user_id, name, created_at) VALUES (?, ?, ?)').bind(userId, name, nowIso()).run();
+    return r.meta.last_row_id;
+  } catch (e) {
+    if (/UNIQUE/i.test(String(e?.message ?? e))) return null;
+    throw e;
+  }
+}
+
+export async function renameFolder(db, userId, id, name) {
+  try {
+    const r = await db.prepare('UPDATE folders SET name = ? WHERE id = ? AND user_id = ?').bind(name, id, userId).run();
+    return r.meta.changes === 1 ? 'ok' : 'missing';
+  } catch (e) {
+    if (/UNIQUE/i.test(String(e?.message ?? e))) return 'exists';
+    throw e;
+  }
+}
+
+// Удаление папки: заметки уходят в «Разное»
+export async function deleteFolder(db, userId, id, fallbackName) {
+  const fb = await getOrCreateFolder(db, userId, fallbackName);
+  await db.batch([
+    db.prepare('UPDATE notes SET folder_id = ? WHERE folder_id = ? AND user_id = ?').bind(fb.id, id, userId),
+    db.prepare('DELETE FROM folders WHERE id = ? AND user_id = ?').bind(id, userId),
+  ]);
+}
+
+// Заметки пользователя (новые сверху); поиск выполняет код, потому что SQLite не умеет регистронезависимый поиск по кириллице
+export async function notesForApp(db, userId, { folderId = null, q = '', limit = 1000 } = {}) {
+  const base = `SELECT n.id, n.text, n.created_at, n.updated_at, n.folder_id, f.name AS folder
+                FROM notes n LEFT JOIN folders f ON f.id = n.folder_id WHERE n.user_id = ?`;
+  const rows = await (folderId
+    ? db.prepare(`${base} AND n.folder_id = ? ORDER BY n.id DESC LIMIT ?`).bind(userId, folderId, limit)
+    : db.prepare(`${base} ORDER BY n.id DESC LIMIT ?`).bind(userId, limit)).all().then((r) => r.results);
+  const needle = q.trim().toLowerCase();
+  return needle ? rows.filter((n) => n.text.toLowerCase().includes(needle)) : rows;
+}
+
+export const pendingRemindersForNotes = (db, userId, noteIds) => {
+  if (!noteIds.length) return Promise.resolve([]);
+  const marks = noteIds.map(() => '?').join(',');
+  return db.prepare(`SELECT id, note_id, remind_at, rrule, local_time, tz, text FROM reminders
+                     WHERE user_id = ? AND status = 'pending' AND note_id IN (${marks}) ORDER BY remind_at`)
+    .bind(userId, ...noteIds).all().then((r) => r.results);
+};
+
+export const pendingRemindersWithText = (db, userId) =>
+  db.prepare(`SELECT r.id, r.note_id, r.remind_at, r.rrule, r.local_time, r.anchor_date, r.tz, COALESCE(r.text, n.text) AS msg
+              FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
+              WHERE r.user_id = ? AND r.status = 'pending' ORDER BY r.remind_at LIMIT 500`).bind(userId).all().then((r) => r.results);
+
+export async function updateNote(db, userId, id, { text, folderId }) {
+  const sets = [], vals = [];
+  if (text !== undefined) { sets.push('text = ?'); vals.push(text); }
+  if (folderId !== undefined) { sets.push('folder_id = ?'); vals.push(folderId); }
+  if (!sets.length) return false;
+  sets.push('updated_at = ?'); vals.push(nowIso());
+  const r = await db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).bind(...vals, id, userId).run();
+  return r.meta.changes === 1;
+}
+
+export const addShoppingOne = (db, userId, name) => addShoppingItems(db, userId, [name]);
+
+export const deleteShoppingItem = (db, userId, id) =>
+  db.prepare('DELETE FROM shopping_items WHERE id = ? AND user_id = ?').bind(id, userId).run().then((r) => r.meta.changes === 1);
+
+// Заменяем напоминание заметки: старые активные отменяем, создаём новое
+export async function replaceNoteReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null }) {
+  await db.batch([
+    db.prepare(`UPDATE reminders SET status = 'cancelled' WHERE user_id = ? AND note_id = ? AND status = 'pending'`).bind(userId, noteId),
+    db.prepare(`INSERT INTO reminders (user_id, note_id, remind_at, rrule, anchor_date, local_time, tz, text, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`).bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text),
+  ]);
+}
