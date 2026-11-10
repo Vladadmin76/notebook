@@ -39,7 +39,7 @@ export function createBot(env) {
     ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`, openApp));
 
   bot.command('help', (ctx) => {
-    const base = 'Просто напишите или наговорите заметки (хоть сразу несколько дел): я исправлю текст, разделю на отдельные заметки и разложу по папкам. Покупки собираю в общий список. Если пришлёте только ссылку, сохраню её во «Входящие». Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/buy — список покупок с галочками\n/cancel — отменить ожидание комментария\n/reminders — будущие напоминания\n/help — справка';
+    const base = 'Просто напишите или наговорите заметки (хоть сразу несколько дел): я исправлю текст, разделю на отдельные заметки и разложу по папкам. Покупки собираю в общий список. Если пришлёте только ссылку, сохраню её во «Входящие». Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/buy — списки покупок с галочками (/buy Costco покажет один магазин)\n/cancel — отменить ожидание комментария\n/reminders — будущие напоминания\n/help — справка';
     const admin = '\n\nАдмин:\n/invite Имя — ссылка-приглашение\n/revoke Имя — отозвать приглашение\n' +
       '/users — список людей\n/block Имя\n/unblock Имя\n/remove Имя — удалить человека вместе с данными';
     return ctx.reply(base + (ctx.user.is_admin ? admin : ''));
@@ -143,42 +143,73 @@ export function createBot(env) {
     return ctx.reply(notes.map(line).join('\n'));
   });
 
-  // ---------- список покупок ----------
+  // ---------- списки покупок по магазинам ----------
+  // key: 'all' (все), 'none' («Без магазина») или номер списка
   const SHOP_LIMIT = 50; // столько пунктов показываем кнопками
-  async function shoppingView(userId) {
-    const items = await db.listShopping(D, userId);
-    if (!items.length) return { text: '🛒 Список покупок пуст.', markup: { inline_keyboard: [] } };
+  const keyLabel = (key, lists) => (key === 'all' ? 'Все' : key === 'none' ? 'Без магазина' : (lists.find((l) => l.id === Number(key))?.name ?? 'Список'));
+
+  async function shoppingView(userId, key = 'all') {
+    const { lists, none } = await db.listShoppingLists(D, userId);
+    const k = key === 'all' || key === 'none' ? key : Number(key);
+    const items = await db.listShopping(D, userId, k);
+
+    // Переключатель списков: выбранный отмечен точкой
+    const chip = (kk, label, open) => ({ text: `${String(kk) === String(key) ? '● ' : ''}${label}${open ? ` ${open}` : ''}`, callback_data: `sv:${kk}` });
+    const total = none.open + lists.reduce((a, l) => a + l.open, 0);
+    const chips = [chip('all', 'Все', total), ...lists.map((l) => chip(l.id, l.name, l.open)), chip('none', 'Без магазина', none.open)];
+    const rows = [];
+    for (let i = 0; i < chips.length; i += 2) rows.push(chips.slice(i, i + 2));
+
     const shown = items.slice(0, SHOP_LIMIT);
-    const rows = shown.map((i) => [{ text: `${i.done ? '✅' : '⬜'} ${i.name}`, callback_data: `si:${i.id}` }]);
+    let lastList;
+    for (const i of shown) {
+      if (key === 'all' && i.list_name !== lastList) { rows.push([{ text: `— ${i.list_name ?? 'Без магазина'} —`, callback_data: 'noop' }]); lastList = i.list_name; }
+      rows.push([{ text: `${i.done ? '✅' : '⬜'} ${i.name}`, callback_data: `si:${i.id}:${key}` }]);
+    }
     const doneCount = items.filter((i) => i.done).length;
-    if (doneCount) rows.push([{ text: `Очистить купленное (${doneCount})`, callback_data: 'sc' }]);
-    const more = items.length > shown.length ? `\nПоказаны первые ${SHOP_LIMIT} из ${items.length}.` : '';
-    return { text: `🛒 Список покупок. Нажмите на пункт, чтобы отметить купленное.${more}`, markup: { inline_keyboard: rows } };
+    if (doneCount) rows.push([{ text: `Очистить купленное (${doneCount})`, callback_data: `sc:${key}` }]);
+    const more = items.length > shown.length ? ` Показаны первые ${SHOP_LIMIT} из ${items.length}.` : '';
+    const title = `🛒 Список покупок · ${keyLabel(key, lists)}`;
+    return { text: items.length ? `${title}\nНажмите на пункт, чтобы отметить купленное.${more}` : `${title}\nПока пусто.`, markup: { inline_keyboard: rows } };
   }
 
-  bot.command('buy', async (ctx) => {
-    const v = await shoppingView(ctx.user.id);
-    return ctx.reply(v.text, { reply_markup: v.markup });
-  });
+  // /buy, /buy Costco, /buy все
+  async function showShopping(ctx, name) {
+    const q = (name ?? '').trim();
+    let key = 'all';
+    let note = '';
+    if (q && !/^(все|всё|all)$/i.test(q)) {
+      if (/^без магазина$/i.test(q)) key = 'none';
+      else {
+        const l = await db.findShoppingList(D, ctx.user.id, q);
+        if (l) key = l.id; else note = `Списка «${q}» нет. Показываю все покупки.\n`;
+      }
+    }
+    const v = await shoppingView(ctx.user.id, key);
+    return ctx.reply(note + v.text, { reply_markup: v.markup });
+  }
 
-  bot.callbackQuery('sl', async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const v = await shoppingView(ctx.user.id);
-    return ctx.reply(v.text, { reply_markup: v.markup });
-  });
+  bot.command('buy', (ctx) => showShopping(ctx, ctx.match));
 
-  bot.callbackQuery(/^si:(\d+)$/, async (ctx) => {
+  bot.callbackQuery('noop', (ctx) => ctx.answerCallbackQuery());
+  bot.callbackQuery('sl', async (ctx) => { await ctx.answerCallbackQuery(); return showShopping(ctx, ''); });
+
+  // Переключение между списками, отметка «куплено», очистка. Кнопки из старых сообщений (без ключа) работают как «все».
+  const redraw = async (ctx, key) => {
+    const v = await shoppingView(ctx.user.id, key);
+    return ctx.editMessageText(v.text, { reply_markup: v.markup }).catch(() => {});
+  };
+  bot.callbackQuery(/^sv:(all|none|\d+)$/, async (ctx) => { await ctx.answerCallbackQuery(); return redraw(ctx, ctx.match[1]); });
+  bot.callbackQuery(/^si:(\d+)(?::(all|none|\d+))?$/, async (ctx) => {
     await db.toggleShopping(D, ctx.user.id, Number(ctx.match[1]));
     await ctx.answerCallbackQuery();
-    const v = await shoppingView(ctx.user.id);
-    return ctx.editMessageText(v.text, { reply_markup: v.markup }).catch(() => {});
+    return redraw(ctx, ctx.match[2] ?? 'all');
   });
-
-  bot.callbackQuery('sc', async (ctx) => {
-    const n = await db.clearDoneShopping(D, ctx.user.id);
+  bot.callbackQuery(/^sc(?::(all|none|\d+))?$/, async (ctx) => {
+    const key = ctx.match[1] ?? 'all';
+    const n = await db.clearDoneShopping(D, ctx.user.id, key === 'all' || key === 'none' ? key : Number(key));
     await ctx.answerCallbackQuery({ text: n ? `Убрано: ${n}` : 'Нечего убирать' });
-    const v = await shoppingView(ctx.user.id);
-    return ctx.editMessageText(v.text, { reply_markup: v.markup }).catch(() => {});
+    return redraw(ctx, key);
   });
 
   // ---------- разбор сообщения на заметки ----------
@@ -250,9 +281,28 @@ export function createBot(env) {
     // Не получилось разобрать: сохраняем всё как есть одной заметкой
     if (!result) return createNote(ctx, { note: { text, folder: null, remind: null }, rawText: text, source, nowIso, failedNote: true });
 
-    const { notes, shopping } = result;
+    const { notes, shopping, request } = result;
+
+    // Просьба «покажи список для Costco» / «покажи все продукты»: отвечаем списком, заметку не создаём
+    if (request && !notes.length && !shopping.length) return showShopping(ctx, request.all ? '' : request.store);
+
+    // Покупки: магазин из фразы определяет список (новый магазин создаётся сам), без магазина идёт в «Без магазина»
     let addedItems = [], existingItems = [];
-    if (shopping.length) ({ added: addedItems, existing: existingItems } = await db.addShoppingItems(D, ctx.user.id, shopping));
+    if (shopping.length) {
+      const ids = new Map();
+      const withLists = [];
+      for (const it of shopping) {
+        let listId = null;
+        if (it.store) {
+          const k = it.store.toLowerCase();
+          if (!ids.has(k)) ids.set(k, await db.getOrCreateShoppingList(D, ctx.user.id, it.store));
+          listId = ids.get(k).id;
+        }
+        withLists.push({ name: it.name, listId, store: it.store ? ids.get(it.store.toLowerCase()).name : null });
+      }
+      const res = await db.addShoppingItems(D, ctx.user.id, withLists);
+      addedItems = res.added; existingItems = res.existing;
+    }
 
     const parts = notes.length + (shopping.length ? 1 : 0);
     if (parts > 1) await ctx.reply(`Разобрал на ${parts} ${parts < 5 ? 'заметки' : 'заметок'}:`);
@@ -260,9 +310,14 @@ export function createBot(env) {
     for (const note of notes) await createNote(ctx, { note, rawText: text, source, nowIso });
 
     if (shopping.length) {
+      const group = (arr) => {
+        const m = new Map();
+        for (const i of arr) { const k = i.store ?? 'Без магазина'; m.set(k, [...(m.get(k) ?? []), i.name]); }
+        return [...m.entries()].map(([k, v]) => `${k}: ${v.join(', ')}`).join('; ');
+      };
       const lines = [];
-      if (addedItems.length) lines.push(`🛒 Добавил в список покупок: ${escapeHtml(addedItems.join(', '))}`);
-      if (existingItems.length) lines.push(`Уже в списке: ${escapeHtml(existingItems.join(', '))}`);
+      if (addedItems.length) lines.push(`🛒 Добавил в список покупок. ${escapeHtml(group(addedItems))}`);
+      if (existingItems.length) lines.push(`Уже в списке: ${escapeHtml(existingItems.map((i) => i.name).join(', '))}`);
       await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: 'Открыть список', callback_data: 'sl' }]] } });
     }
   }

@@ -181,25 +181,77 @@ export async function handleAppApi({ request, env, url, user, body }) {
     });
   }
 
-  // ---------- список покупок ----------
-  if (path === '/api/shopping' && get) return json({ items: await db.listShopping(D, user.id) });
+  // ---------- списки покупок (по магазинам) ----------
+  const shopView = async (key) => {
+    const [sum, items] = await Promise.all([db.listShoppingLists(D, user.id), db.listShopping(D, user.id, key)]);
+    return { lists: sum.lists, none: sum.none, items };
+  };
+  // Ключ списка из запроса: 'all', 'none' или номер своего списка
+  const parseKey = async (v) => {
+    if (v === undefined || v === null || v === '' || v === 'all') return 'all';
+    if (v === 'none') return 'none';
+    const id = intOr(v);
+    return !Number.isNaN(id) && (await db.getShoppingList(D, user.id, id)) ? id : null;
+  };
+  const listName = (v) => {
+    const t = String(v ?? '').trim().replace(/\s+/g, ' ');
+    return FOLDER_NAME_RE.test(t) ? t : null;
+  };
+
+  if (path === '/api/shopping' && get) {
+    const key = await parseKey(url.searchParams.get('list'));
+    if (key === null) return json({ error: 'not_found' }, 404);
+    return json(await shopView(key));
+  }
   if (path === '/api/shopping/add' && post) {
     const name = String(body.name ?? '').trim().replace(/\s+/g, ' ');
     if (!name || name.length > 60) return json({ error: 'bad_name' }, 400);
-    const res = await db.addShoppingOne(D, user.id, name);
-    return json({ added: res.added.length, items: await db.listShopping(D, user.id) });
+    let listId = null;
+    if (body.list_id !== undefined && body.list_id !== null && body.list_id !== 'none') {
+      const l = await db.getShoppingList(D, user.id, intOr(body.list_id));
+      if (!l) return json({ error: 'not_found' }, 404);
+      listId = l.id;
+    }
+    await db.addShoppingOne(D, user.id, name, listId);
+    return json(await shopView((await parseKey(body.view)) ?? 'all'));
   }
   if (path === '/api/shopping/toggle' && post) {
     await db.toggleShopping(D, user.id, intOr(body.id));
-    return json({ items: await db.listShopping(D, user.id) });
+    return json(await shopView((await parseKey(body.view)) ?? 'all'));
   }
   if (path === '/api/shopping/delete' && post) {
     await db.deleteShoppingItem(D, user.id, intOr(body.id));
-    return json({ items: await db.listShopping(D, user.id) });
+    return json(await shopView((await parseKey(body.view)) ?? 'all'));
+  }
+  if (path === '/api/shopping/move' && post) {
+    const to = body.list_id === null || body.list_id === 'none' ? null : intOr(body.list_id);
+    if (to !== null && Number.isNaN(to)) return json({ error: 'not_found' }, 404);
+    if (!(await db.moveShoppingItem(D, user.id, intOr(body.id), to))) return json({ error: 'not_found' }, 404);
+    return json(await shopView((await parseKey(body.view)) ?? 'all'));
   }
   if (path === '/api/shopping/clear' && post) {
-    await db.clearDoneShopping(D, user.id);
-    return json({ items: await db.listShopping(D, user.id) });
+    const key = await parseKey(body.view);
+    if (key === null) return json({ error: 'not_found' }, 404);
+    await db.clearDoneShopping(D, user.id, key);
+    return json(await shopView(key));
+  }
+  if (path === '/api/shopping/lists/create' && post) {
+    const name = listName(body.name);
+    if (!name) return json({ error: 'bad_name' }, 400);
+    const l = await db.getOrCreateShoppingList(D, user.id, name);
+    return json({ id: l.id, ...(await shopView(l.id)) });
+  }
+  if (path === '/api/shopping/lists/rename' && post) {
+    const name = listName(body.name);
+    if (!name) return json({ error: 'bad_name' }, 400);
+    const res = await db.renameShoppingList(D, user.id, intOr(body.id), name);
+    return res === 'ok' ? json(await shopView(intOr(body.id))) : json({ error: res === 'exists' ? 'exists' : 'not_found' }, res === 'exists' ? 409 : 404);
+  }
+  if (path === '/api/shopping/lists/delete' && post) {
+    const l = await db.getShoppingList(D, user.id, intOr(body.id));
+    if (!l) return json({ error: 'not_found' }, 404);
+    await db.deleteShoppingList(D, user.id, l.id);
+    return json(await shopView('all'));
   }
 
   return null;

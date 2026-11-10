@@ -8,6 +8,7 @@ test('известная папка принимается, регистр пр�
   const r = parseModelReply('{"text":"Купить хлеб","folder":"покупки","new_folder":false}', folders, 'купить хлеп');
   assert.deepEqual(r.notes, [{ text: 'Купить хлеб', folder: 'Покупки', isNewFolder: false, remind: null }]);
   assert.deepEqual(r.shopping, []);
+  assert.equal(r.request, null);
 });
 test('новая папка с нормальным именем создаётся', () => {
   const r = parseModelReply('{"text":"Отпуск","folder":"Путешествия"}', folders, 'отпуск').notes[0];
@@ -42,11 +43,11 @@ test('сообщение делится на заметки, покупки со
   });
   const r = parseModelReply(raw, folders, 'купить хлеба потом завтра в 9 записаться к врачу а ещё сметану и записаться на курсы');
   assert.equal(r.notes.length, 2);
-  assert.deepEqual(r.shopping, ['Хлеб', 'Сметана']);   // дубли и мусор убраны
+  assert.deepEqual(r.shopping, [{ name: 'Хлеб', store: null }, { name: 'Сметана', store: null }]);   // дубли и мусор убраны
 });
 test('только покупки: заметок нет, это нормально', () => {
   const r = parseModelReply('{"notes": [], "shopping": ["Хлеб"]}', folders, 'купить хлеб');
-  assert.deepEqual(r, { notes: [], shopping: ['Хлеб'] });
+  assert.deepEqual(r, { notes: [], shopping: [{ name: 'Хлеб', store: null }], request: null });
 });
 test('пустой разбор отклоняется', () => {
   assert.equal(parseModelReply('{"notes": [], "shopping": []}', folders, 'что-то'), null);
@@ -58,7 +59,7 @@ test('больше 10 заметок: хвост склеивается в по�
   assert.match(r.notes[9].text, /Дело 10 Дело 11 Дело 12 Дело 13/);
 });
 test('выдуманный лишний текст отклоняется', () => {
-  assert.equal(parseModelReply(JSON.stringify({ notes: [], shopping: ['Хлеб'.repeat(15)] }), folders, 'х'.repeat(3)), null);
+  assert.equal(parseModelReply(JSON.stringify({ notes: [], shopping: [{ name: 'Хлеб'.repeat(15), store: null }] }), folders, 'х'.repeat(3)), null);
 });
 
 test('пустышка вместо текста напоминания отбрасывается', () => {
@@ -82,4 +83,20 @@ test('если модель потеряла или изменила ссылк�
   const kept = JSON.stringify({ notes: [{ text: 'https://tool.example/app Удобный планировщик', folder: 'Мои приложения' }], shopping: [] });
   assert.equal(parseModelReply(lost, folders, orig), null);
   assert.equal(parseModelReply(kept, folders, orig).notes[0].folder, 'Мои приложения');
+});
+
+test('покупки с магазинами: названия чистятся, один товар в двух магазинах остаётся', () => {
+  const raw = JSON.stringify({ notes: [], shopping: [
+    { name: 'Молоко', store: 'Costco' }, { name: 'Молоко', store: 'Walmart' }, { name: 'молоко', store: 'costco' },
+    { name: 'Сметана', store: null }, { name: 'Яйца', store: '<script>' }, 'Хлеб',
+  ] });
+  const r = parseModelReply(raw, folders, 'молоко в costco и в walmart сметана яйца хлеб');
+  assert.deepEqual(r.shopping.map((x) => `${x.store ?? '-'}:${x.name}`), ['Costco:Молоко', 'Walmart:Молоко', '-:Сметана', '-:Яйца', '-:Хлеб']);
+});
+test('просьба показать список покупок разбирается', () => {
+  const r = parseModelReply('{"notes": [], "shopping": [], "request": {"type": "show_shopping", "store": "Costco", "all": false}}', folders, 'покажи список для Costco');
+  assert.deepEqual(r.request, { type: 'show_shopping', store: 'Costco', all: false });
+  const all = parseModelReply('{"notes": [], "shopping": [], "request": {"type": "show_shopping", "store": null}}', folders, 'покажи все продукты');
+  assert.deepEqual(all.request, { type: 'show_shopping', store: null, all: true });
+  assert.equal(parseModelReply('{"notes": [], "shopping": [], "request": {"type": "delete_everything"}}', folders, 'x'), null); // чужие типы действий не принимаются
 });

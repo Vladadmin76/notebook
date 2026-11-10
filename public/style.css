@@ -126,3 +126,12 @@ button.copied { background: var(--good); }
 .pg-num { width: 84px; text-align: center; padding: 8px; margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
 #pgLen { width: 100%; accent-color: var(--accent); height: 28px; margin: 0; padding: 0; background: transparent; border: 0; }
 .pg-ends { display: flex; justify-content: space-between; font-size: .75rem; color: var(--muted); font-family: ui-monospace, Menlo, monospace; margin-top: -6px; }
+
+/* ---------- списки покупок по магазинам ---------- */
+.chips.scroll { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 6px; margin: 6px 0 10px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.chips.scroll::-webkit-scrollbar { display: none; }
+.chips.scroll .chip { flex: 0 0 auto; white-space: nowrap; }
+.chip b { font-weight: 600; opacity: .8; margin-left: 2px; }
+.chip.add { color: var(--accent); border-style: dashed; background: transparent; }
+.sheet .wide { margin-top: 8px; }
+#listActions .btnrow { margin: 0 0 10px; }

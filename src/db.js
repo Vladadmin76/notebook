@@ -189,36 +189,89 @@ export const hasPendingReminder = (db, userId, noteId) =>
   db.prepare(`SELECT 1 AS x FROM reminders WHERE user_id = ? AND note_id = ? AND status = 'pending' LIMIT 1`)
     .bind(userId, noteId).first().then(Boolean);
 
-// ---------- список покупок ----------
+// ---------- списки покупок (по магазинам) ----------
+// listKey: 'all' (все списки), 'none' («Без магазина») или номер списка
 
-// Добавляет пункты; те, что уже есть в списке некупленными, пропускаем. Возвращает { added, existing }.
-export async function addShoppingItems(db, userId, names) {
-  const current = await db.prepare('SELECT name FROM shopping_items WHERE user_id = ? AND done = 0').bind(userId).all()
-    .then((r) => new Set(r.results.map((x) => x.name.toLowerCase())));
+export const listShoppingLists = async (db, userId) => {
+  const lists = await db.prepare(`SELECT l.id, l.name, COALESCE(SUM(i.done = 0), 0) AS open, COALESCE(SUM(i.done = 1), 0) AS done
+                                  FROM shopping_lists l LEFT JOIN shopping_items i ON i.list_id = l.id
+                                  WHERE l.user_id = ? GROUP BY l.id ORDER BY l.name COLLATE NOCASE`).bind(userId).all().then((r) => r.results);
+  const none = await db.prepare(`SELECT COALESCE(SUM(done = 0), 0) AS open, COALESCE(SUM(done = 1), 0) AS done
+                                 FROM shopping_items WHERE user_id = ? AND list_id IS NULL`).bind(userId).first();
+  return { lists, none };
+};
+
+export const findShoppingList = (db, userId, name) =>
+  db.prepare('SELECT * FROM shopping_lists WHERE user_id = ? AND name = ? COLLATE NOCASE').bind(userId, name).first();
+
+export const getShoppingList = (db, userId, id) =>
+  db.prepare('SELECT * FROM shopping_lists WHERE id = ? AND user_id = ?').bind(id, userId).first();
+
+export async function getOrCreateShoppingList(db, userId, name) {
+  await db.prepare('INSERT OR IGNORE INTO shopping_lists (user_id, name, created_at) VALUES (?, ?, ?)').bind(userId, name, nowIso()).run();
+  return findShoppingList(db, userId, name);
+}
+
+export async function renameShoppingList(db, userId, id, name) {
+  try {
+    const r = await db.prepare('UPDATE shopping_lists SET name = ? WHERE id = ? AND user_id = ?').bind(name, id, userId).run();
+    return r.meta.changes >= 1 ? 'ok' : 'missing';
+  } catch (e) {
+    if (/UNIQUE/i.test(String(e?.message ?? e))) return 'exists';
+    throw e;
+  }
+}
+
+// Удаление списка: пункты переходят в «Без магазина»
+export const deleteShoppingList = (db, userId, id) =>
+  db.batch([
+    db.prepare('UPDATE shopping_items SET list_id = NULL WHERE list_id = ? AND user_id = ?').bind(id, userId),
+    db.prepare('DELETE FROM shopping_lists WHERE id = ? AND user_id = ?').bind(id, userId),
+  ]);
+
+// Добавляет пункты { name, listId }. Повтор отсеивается только внутри одного списка: один товар можно держать в двух магазинах.
+export async function addShoppingItems(db, userId, items) {
+  const current = await db.prepare('SELECT name, list_id FROM shopping_items WHERE user_id = ? AND done = 0').bind(userId).all()
+    .then((r) => new Set(r.results.map((x) => `${x.list_id ?? 'none'}|${x.name.toLowerCase()}`)));
   const added = [], existing = [];
   const now = nowIso();
   const stmts = [];
-  for (const name of names) {
-    if (current.has(name.toLowerCase())) { existing.push(name); continue; }
-    current.add(name.toLowerCase());
-    added.push(name);
-    stmts.push(db.prepare('INSERT INTO shopping_items (user_id, name, done, created_at) VALUES (?, ?, 0, ?)').bind(userId, name, now));
+  for (const it of items) {
+    const key = `${it.listId ?? 'none'}|${it.name.toLowerCase()}`;
+    if (current.has(key)) { existing.push(it); continue; }
+    current.add(key);
+    added.push(it);
+    stmts.push(db.prepare('INSERT INTO shopping_items (user_id, name, list_id, done, created_at) VALUES (?, ?, ?, 0, ?)').bind(userId, it.name, it.listId ?? null, now));
   }
   if (stmts.length) await db.batch(stmts);
   return { added, existing };
 }
 
-// Некупленные сверху (в порядке добавления), купленные внизу (недавно купленные выше)
-export const listShopping = (db, userId) =>
-  db.prepare(`SELECT id, name, done FROM shopping_items WHERE user_id = ?
-              ORDER BY done, CASE WHEN done = 0 THEN id END, done_at DESC`).bind(userId).all().then((r) => r.results);
+// Некупленные сверху (в порядке добавления), купленные внизу; при 'all' пункты сгруппированы по магазинам («Без магазина» первой)
+export async function listShopping(db, userId, listKey = 'all') {
+  const where = listKey === 'all' ? '' : listKey === 'none' ? 'AND i.list_id IS NULL' : 'AND i.list_id = ?';
+  const stmt = db.prepare(`SELECT i.id, i.name, i.done, i.list_id, l.name AS list_name
+                           FROM shopping_items i LEFT JOIN shopping_lists l ON l.id = i.list_id
+                           WHERE i.user_id = ? ${where}
+                           ORDER BY (l.name IS NOT NULL), l.name COLLATE NOCASE, i.done, CASE WHEN i.done = 0 THEN i.id END, i.done_at DESC`);
+  const bound = typeof listKey === 'number' ? stmt.bind(userId, listKey) : stmt.bind(userId);
+  return bound.all().then((r) => r.results);
+}
 
 export const toggleShopping = (db, userId, id) =>
   db.prepare(`UPDATE shopping_items SET done = 1 - done, done_at = CASE WHEN done = 0 THEN ? ELSE NULL END
               WHERE id = ? AND user_id = ?`).bind(nowIso(), id, userId).run().then((r) => r.meta.changes === 1);
 
-export const clearDoneShopping = (db, userId) =>
-  db.prepare('DELETE FROM shopping_items WHERE user_id = ? AND done = 1').bind(userId).run().then((r) => r.meta.changes);
+export const moveShoppingItem = (db, userId, id, listId) =>
+  db.prepare(`UPDATE shopping_items SET list_id = ? WHERE id = ? AND user_id = ?
+              AND (? IS NULL OR EXISTS (SELECT 1 FROM shopping_lists WHERE id = ? AND user_id = ?))`)
+    .bind(listId, id, userId, listId, listId, userId).run().then((r) => r.meta.changes === 1);
+
+export const clearDoneShopping = (db, userId, listKey = 'all') => {
+  const where = listKey === 'all' ? '' : listKey === 'none' ? 'AND list_id IS NULL' : 'AND list_id = ?';
+  const stmt = db.prepare(`DELETE FROM shopping_items WHERE user_id = ? AND done = 1 ${where}`);
+  return (typeof listKey === 'number' ? stmt.bind(userId, listKey) : stmt.bind(userId)).run().then((r) => r.meta.changes);
+};
 
 // ---------- приложение: папки, заметки, покупки ----------
 
@@ -292,7 +345,7 @@ export async function updateNote(db, userId, id, { text, folderId }) {
   return r.meta.changes === 1;
 }
 
-export const addShoppingOne = (db, userId, name) => addShoppingItems(db, userId, [name]);
+export const addShoppingOne = (db, userId, name, listId = null) => addShoppingItems(db, userId, [{ name, listId }]);
 
 export const deleteShoppingItem = (db, userId, id) =>
   db.prepare('DELETE FROM shopping_items WHERE id = ? AND user_id = ?').bind(id, userId).run().then((r) => r.meta.changes === 1);

@@ -346,29 +346,94 @@ function screenReminder(noteId, existing) {
 }
 const haptic1 = () => { try { tg.HapticFeedback.selectionChanged(); } catch {} };
 
-// ---------- вкладка «Покупки» ----------
+// ---------- вкладка «Покупки»: списки по магазинам ----------
+let shopKey = 'all'; // выбранный список: 'all', 'none' или номер; запоминается между переключениями вкладок
 async function screenShopping() {
-  frame('shop', `<div class="card"><h2>🛒 Список покупок</h2>
+  frame('shop', `<div class="card"><h2>🛒 Покупки</h2>
+      <div class="chips scroll" id="lists"></div>
+      <div id="listActions"></div>
       <div class="addrow"><input id="item" maxlength="60" placeholder="Что купить?" autocomplete="off"><button id="add" class="addbtn">+</button></div>
       <div id="items"><p class="muted">Загрузка…</p></div></div>`);
-  let items = [];
+  let data = { lists: [], none: { open: 0, done: 0 }, items: [] };
+  const curList = () => data.lists.find((l) => String(l.id) === String(shopKey));
+
   const draw = () => {
-    const open = items.filter((i) => !i.done), done = items.filter((i) => i.done);
-    const row = (i) => `<div class="shop ${i.done ? 'done' : ''}" data-id="${i.id}"><span class="box">${i.done ? '✓' : ''}</span><span class="name">${esc(i.name)}</span><button class="x" data-del="${i.id}" aria-label="Убрать">✕</button></div>`;
-    $('items').innerHTML = (open.map(row).join('') || '<p class="muted">Всё куплено или список пуст.</p>')
-      + (done.length ? `<div class="sep">Куплено</div>${done.map(row).join('')}<button class="ghost wide" id="clear">Очистить купленное (${done.length})</button>` : '');
+    if (shopKey !== 'all' && shopKey !== 'none' && !curList()) shopKey = 'all'; // список удалили
+    const total = data.none.open + data.lists.reduce((a, l) => a + l.open, 0);
+    const chip = (k, label, n) => `<button class="chip ${String(k) === String(shopKey) ? 'on' : ''}" data-key="${k}">${esc(label)}${n ? ` <b>${n}</b>` : ''}</button>`;
+    $('lists').innerHTML = chip('all', 'Все', total) + data.lists.map((l) => chip(l.id, l.name, l.open)).join('') + chip('none', 'Без магазина', data.none.open)
+      + '<button class="chip add" id="newList" aria-label="Новый список">+ Список</button>';
+    $('listActions').innerHTML = curList()
+      ? '<div class="btnrow"><button class="ghost mini" id="renList">Переименовать</button><button class="ghost mini danger" id="delList">Удалить список</button></div>' : '';
+
+    const open = data.items.filter((i) => !i.done), done = data.items.filter((i) => i.done);
+    const row = (i) => `<div class="shop ${i.done ? 'done' : ''}" data-id="${i.id}"><span class="box">${i.done ? '✓' : ''}</span><span class="name">${esc(i.name)}</span>
+        <button class="x" data-move="${i.id}" aria-label="В другой список">⇄</button><button class="x" data-del="${i.id}" aria-label="Убрать">✕</button></div>`;
+    let html;
+    if (shopKey === 'all') {
+      // Цельный список, сгруппированный по магазинам: внутри группы сначала нужное, потом купленное (бледнее)
+      const groups = [];
+      for (const i of data.items) {
+        const name = i.list_name ?? 'Без магазина';
+        let g = groups.find((x) => x.name === name);
+        if (!g) { g = { name, items: [] }; groups.push(g); }
+        g.items.push(i);
+      }
+      html = groups.map((g) => `<div class="sep">${esc(g.name)}</div>${g.items.map(row).join('')}`).join('') || '<p class="muted">Список пуст.</p>';
+      if (done.length) html += `<button class="ghost wide" id="clear">Очистить купленное (${done.length})</button>`;
+    } else {
+      html = (open.map(row).join('') || '<p class="muted">Здесь всё куплено или пусто.</p>')
+        + (done.length ? `<div class="sep">Куплено</div>${done.map(row).join('')}<button class="ghost wide" id="clear">Очистить купленное (${done.length})</button>` : '');
+    }
+    $('items').innerHTML = html;
   };
-  const load = async () => { const r = await api('/api/shopping'); if (r.ok) { items = r.data.items; draw(); } };
-  const act = async (path, body) => { const r = await api(path, body); if (r.ok) { items = r.data.items; draw(); } return r; };
+
+  const load = async () => { const r = await api(`/api/shopping?list=${shopKey}`); if (r.ok) { data = r.data; draw(); } };
+  const act = async (path, body) => {
+    const r = await api(path, { ...body, view: shopKey });
+    if (r.ok) { data = r.data; draw(); } else notify(errText(r.data.error));
+    return r;
+  };
   await load();
+
+  $('lists').onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.id === 'newList') {
+      const name = await askText('Название магазина или списка');
+      if (!name) return;
+      const r = await api('/api/shopping/lists/create', { name });
+      if (r.ok) { shopKey = String(r.data.id); data = r.data; draw(); } else notify(errText(r.data.error));
+    } else if (b.dataset.key !== undefined) { shopKey = b.dataset.key; load(); }
+  };
+  $('listActions').onclick = async (e) => {
+    const l = curList();
+    if (!l) return;
+    if (e.target.id === 'renList') {
+      const name = await askText('Новое название', l.name);
+      if (!name || name === l.name) return;
+      const r = await api('/api/shopping/lists/rename', { id: l.id, name });
+      if (r.ok) { data = r.data; draw(); } else notify(errText(r.data.error));
+    } else if (e.target.id === 'delList') {
+      if (!(await confirmBox(`Удалить список «${l.name}»? Покупки перейдут в «Без магазина».`))) return;
+      const r = await api('/api/shopping/lists/delete', { id: l.id });
+      if (r.ok) { shopKey = 'all'; data = r.data; draw(); } else notify(errText(r.data.error));
+    }
+  };
   $('items').onclick = async (e) => {
     const del = e.target.closest('[data-del]');
     if (del) return act('/api/shopping/delete', { id: Number(del.dataset.del) });
+    const mv = e.target.closest('[data-move]');
+    if (mv) {
+      const choice = await pickList(data.lists, 'Перенести в…');
+      if (choice === undefined) return;
+      return act('/api/shopping/move', { id: Number(mv.dataset.move), list_id: choice });
+    }
     if (e.target.id === 'clear') return act('/api/shopping/clear', {});
     const row = e.target.closest('.shop');
     if (!row) return;
     // Сразу меняем вид, затем подтверждаем на сервере
-    const it = items.find((i) => i.id === Number(row.dataset.id));
+    const it = data.items.find((i) => i.id === Number(row.dataset.id));
     if (it) { it.done = it.done ? 0 : 1; draw(); haptic1(); }
     act('/api/shopping/toggle', { id: Number(row.dataset.id) });
   };
@@ -376,10 +441,32 @@ async function screenShopping() {
     const name = $('item').value.trim();
     if (!name) return;
     $('item').value = '';
-    await act('/api/shopping/add', { name });
+    // В выбранный список; в «Все» и «Без магазина» новый пункт идёт в «Без магазина»
+    const listId = curList() ? curList().id : null;
+    await act('/api/shopping/add', { name, list_id: listId });
   };
   $('add').onclick = add;
   $('item').onkeydown = (e) => { if (e.key === 'Enter') add(); };
+}
+
+// Окно выбора списка для переноса пункта: возвращает номер списка, null («Без магазина») или undefined (отмена)
+function pickList(lists, title) {
+  return new Promise((resolve) => {
+    const m = document.createElement('div');
+    m.className = 'modal';
+    m.innerHTML = `<div class="sheet"><h3>${esc(title)}</h3>
+      <button class="ghost wide" data-pick="none">Без магазина</button>
+      ${lists.map((l) => `<button class="ghost wide" data-pick="${l.id}">${esc(l.name)}</button>`).join('')}
+      <button class="wide" data-pick="cancel">Отмена</button></div>`;
+    document.body.appendChild(m);
+    m.onclick = (e) => {
+      const b = e.target.closest('[data-pick]');
+      if (!b && e.target !== m) return;
+      m.remove();
+      if (!b || b.dataset.pick === 'cancel') return resolve(undefined);
+      resolve(b.dataset.pick === 'none' ? null : Number(b.dataset.pick));
+    };
+  });
 }
 
 // ---------- вкладка «Календарь» ----------
