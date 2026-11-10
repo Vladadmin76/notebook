@@ -343,3 +343,12 @@ export const inboxDigestCandidates = (db) =>
 export const claimDigest = (db, userId, today) =>
   db.prepare(`UPDATE users SET inbox_digest_on = ? WHERE id = ? AND (inbox_digest_on IS NULL OR inbox_digest_on != ?)`)
     .bind(today, userId, today).run().then((r) => r.meta.changes === 1);
+
+// Уборка: старые отправленные и отменённые напоминания (90 дней) и просроченные ожидания комментария
+export async function purgeOld(db, nowIsoStr) {
+  const cutoff = new Date(new Date(nowIsoStr).getTime() - 90 * 86400e3).toISOString();
+  await db.batch([
+    db.prepare(`DELETE FROM reminders WHERE status IN ('sent', 'cancelled') AND COALESCE(sent_at, remind_at) < ?`).bind(cutoff),
+    db.prepare('DELETE FROM user_state WHERE expires_at < ?').bind(nowIsoStr),
+  ]);
+}

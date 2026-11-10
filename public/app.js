@@ -60,6 +60,7 @@ function screenJoin(invite) {
     <p>Как тебя зовут?</p>
     <input id="name" maxlength="40" autocomplete="given-name" placeholder="Например, Олег">
     <p class="muted">Твой часовой пояс: <b>${esc(browserTz)}</b>. Сейчас у тебя ${esc(new Date().toLocaleString('ru-RU', { dateStyle: 'long', timeStyle: 'short' }))}. Если это не так, поправишь в настройках.</p>
+    <p class="muted small">Тексты заметок и голосовые сообщения обрабатываются сервисами DeepSeek (правка текста) и Groq (распознавание речи). Не записывайте то, что не хотите им передавать.</p>
     <p id="err" class="err" hidden></p>
     <button id="go">Познакомиться</button>
   </section>`);

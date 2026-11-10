@@ -27,7 +27,12 @@ async function handleApi(request, env, url, ctx) {
   const user = await db.getUser(D, tgUser.id);
   if (user?.status === 'blocked') return json({ error: 'blocked' }, 403);
   const path = url.pathname;
-  const body = request.method === 'POST' ? await request.json().catch(() => ({})) : {};
+  let body = {};
+  if (request.method === 'POST') {
+    const raw = await request.text();
+    if (raw.length > MAX_BODY) return json({ error: 'too_large' }, 413);
+    try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
+  }
 
   // --- кто я ---
   if (path === '/api/me' && request.method === 'GET') {
@@ -135,10 +140,28 @@ async function handleApi(request, env, url, ctx) {
 
 const pub = (u) => ({ label: u.label, tz: u.tz, theme: u.theme, can_write: !!u.can_write, is_admin: !!u.is_admin });
 
-export default {
-  async fetch(request, env, ctx) {
+const MAX_BODY = 100_000; // байт: заметки до 2000 знаков, всё остальное в запросах ещё меньше
+
+// Защитные заголовки на всех ответах; CSP на страницах. Приложение открывается внутри Telegram, поэтому вставлять его в рамку разрешено только Telegram.
+const CSP = "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+  + "connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org https://t.me; base-uri 'none'; form-action 'none'; object-src 'none'";
+function secure(res) {
+  const h = new Headers(res.headers);
+  h.set('X-Content-Type-Options', 'nosniff');
+  h.set('Referrer-Policy', 'no-referrer');
+  if ((h.get('content-type') ?? '').includes('text/html')) h.set('Content-Security-Policy', CSP);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
+
+async function route(request, env, ctx) {
+  {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // Слишком большие запросы отклоняем до любой обработки
+    if (request.method === 'POST' && Number(request.headers.get('content-length') ?? 0) > MAX_BODY) {
+      return json({ error: 'too_large' }, 413);
+    }
 
     if (path === '/tg/webhook' && request.method === 'POST') {
       if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TG_WEBHOOK_SECRET) {
@@ -160,6 +183,9 @@ export default {
       const { bot } = getBot(env);
       const sent = await processTick(env, bot.api);
       const digests = await processInboxDigests(env, bot.api);
+      // Раз в сутки (в 03:07 UTC) убираем старое: отправленные напоминания старше 90 дней и просроченные ожидания комментария
+      const now = new Date();
+      if (now.getUTCHours() === 3 && now.getUTCMinutes() === 7) await db.purgeOld(env.DB, now.toISOString());
       return json({ sent, digests });
     }
 
@@ -168,5 +194,16 @@ export default {
     if (path.startsWith('/api/')) return handleApi(request, env, url, ctx);
 
     return env.ASSETS.fetch(request); // приложение: index.html, app.js, style.css
+  }
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      return secure(await route(request, env, ctx));
+    } catch (e) {
+      console.error('unhandled', e?.stack ?? e);
+      return secure(json({ error: 'server_error' }, 500));
+    }
   },
 };
