@@ -1,5 +1,7 @@
 import { nowIso, randomToken } from './util.js';
-import { START_FOLDERS } from './config.js';
+import { START_FOLDERS, FOLDER_KINDS } from './config.js';
+
+export const kindOf = (name) => FOLDER_KINDS[Object.keys(FOLDER_KINDS).find((k) => k.toLowerCase() === String(name).toLowerCase())] ?? null;
 
 export const getUser = (db, id) => db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
 
@@ -77,8 +79,8 @@ export async function registerUser(db, { id, tgName, label, tz, code, isAdmin })
       .bind(id, now, code));
   }
   for (const f of START_FOLDERS) {
-    stmts.push(db.prepare(`INSERT INTO folders (user_id, name, created_at)
-                           SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)`).bind(id, f, now, id));
+    stmts.push(db.prepare(`INSERT INTO folders (user_id, name, kind, created_at)
+                           SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)`).bind(id, f, kindOf(f), now, id));
   }
   try {
     await db.batch(stmts);
@@ -100,7 +102,7 @@ export const markCanWrite = (db, id) => db.prepare('UPDATE users SET can_write =
 // ---------- папки и заметки ----------
 
 export const listFolders = (db, userId) =>
-  db.prepare(`SELECT f.id, f.name, COUNT(n.id) AS n FROM folders f
+  db.prepare(`SELECT f.id, f.name, f.kind, COUNT(n.id) AS n FROM folders f
               LEFT JOIN notes n ON n.folder_id = f.id
               WHERE f.user_id = ? GROUP BY f.id ORDER BY f.id`).bind(userId).all().then((r) => r.results);
 
@@ -108,8 +110,8 @@ export const getFolderByName = (db, userId, name) =>
   db.prepare('SELECT * FROM folders WHERE user_id = ? AND name = ? COLLATE NOCASE').bind(userId, name).first();
 
 export async function getOrCreateFolder(db, userId, name) {
-  await db.prepare('INSERT OR IGNORE INTO folders (user_id, name, created_at) VALUES (?, ?, ?)')
-    .bind(userId, name, nowIso()).run();
+  await db.prepare('INSERT OR IGNORE INTO folders (user_id, name, kind, created_at) VALUES (?, ?, ?, ?)')
+    .bind(userId, name, kindOf(name), nowIso()).run();
   return getFolderByName(db, userId, name);
 }
 
@@ -229,7 +231,7 @@ export const getFolder = (db, userId, id) =>
 
 export async function createFolder(db, userId, name) {
   try {
-    const r = await db.prepare('INSERT INTO folders (user_id, name, created_at) VALUES (?, ?, ?)').bind(userId, name, nowIso()).run();
+    const r = await db.prepare('INSERT INTO folders (user_id, name, kind, created_at) VALUES (?, ?, ?, ?)').bind(userId, name, kindOf(name), nowIso()).run();
     return r.meta.last_row_id;
   } catch (e) {
     if (/UNIQUE/i.test(String(e?.message ?? e))) return null;
@@ -258,7 +260,7 @@ export async function deleteFolder(db, userId, id, fallbackName) {
 
 // Заметки пользователя (новые сверху); поиск выполняет код, потому что SQLite не умеет регистронезависимый поиск по кириллице
 export async function notesForApp(db, userId, { folderId = null, q = '', limit = 1000 } = {}) {
-  const base = `SELECT n.id, n.text, n.created_at, n.updated_at, n.folder_id, f.name AS folder
+  const base = `SELECT n.id, n.text, n.created_at, n.updated_at, n.done, n.done_at, n.folder_id, f.name AS folder, f.kind AS kind
                 FROM notes n LEFT JOIN folders f ON f.id = n.folder_id WHERE n.user_id = ?`;
   const rows = await (folderId
     ? db.prepare(`${base} AND n.folder_id = ? ORDER BY n.id DESC LIMIT ?`).bind(userId, folderId, limit)
@@ -303,3 +305,41 @@ export async function replaceNoteReminder(db, { userId, noteId, remindAt, rrule 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`).bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text),
   ]);
 }
+
+
+// ---------- задачи, входящие, состояние диалога ----------
+
+export const toggleNoteDone = (db, userId, id) =>
+  db.prepare(`UPDATE notes SET done = 1 - done, done_at = CASE WHEN done = 0 THEN ? ELSE NULL END, updated_at = ?
+              WHERE id = ? AND user_id = ?`).bind(nowIso(), nowIso(), id, userId).run().then((r) => r.meta.changes >= 1);
+
+export const setState = (db, userId, kind, noteId, expiresAt) =>
+  db.prepare(`INSERT INTO user_state (user_id, kind, note_id, expires_at) VALUES (?, ?, ?, ?)
+              ON CONFLICT(user_id) DO UPDATE SET kind = excluded.kind, note_id = excluded.note_id, expires_at = excluded.expires_at`)
+    .bind(userId, kind, noteId, expiresAt).run();
+
+export const getState = async (db, userId, nowIsoStr = nowIso()) => {
+  const st = await db.prepare('SELECT * FROM user_state WHERE user_id = ?').bind(userId).first();
+  if (!st) return null;
+  if (st.expires_at <= nowIsoStr) { await clearState(db, userId); return null; }
+  return st;
+};
+export const clearState = (db, userId) => db.prepare('DELETE FROM user_state WHERE user_id = ?').bind(userId).run();
+
+export const appendToNote = (db, userId, id, extra, maxLen) =>
+  db.prepare(`UPDATE notes SET text = text || char(10) || ?, updated_at = ? WHERE id = ? AND user_id = ? AND length(text) + 1 + length(?) <= ?`)
+    .bind(extra, nowIso(), id, userId, extra, maxLen).run().then((r) => r.meta.changes >= 1);
+
+export const findNoteByText = (db, userId, folderId, text) =>
+  db.prepare('SELECT id FROM notes WHERE user_id = ? AND folder_id = ? AND text = ? LIMIT 1').bind(userId, folderId, text).first();
+
+// Люди, у которых во «Входящих» что-то лежит, и сколько
+export const inboxDigestCandidates = (db) =>
+  db.prepare(`SELECT u.id, u.tz, u.inbox_digest_on, COUNT(n.id) AS c
+              FROM users u JOIN folders f ON f.user_id = u.id AND f.kind = 'inbox'
+              JOIN notes n ON n.folder_id = f.id
+              WHERE u.status = 'active' GROUP BY u.id`).all().then((r) => r.results);
+
+export const claimDigest = (db, userId, today) =>
+  db.prepare(`UPDATE users SET inbox_digest_on = ? WHERE id = ? AND (inbox_digest_on IS NULL OR inbox_digest_on != ?)`)
+    .bind(today, userId, today).run().then((r) => r.meta.changes === 1);

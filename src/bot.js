@@ -1,8 +1,8 @@
 import { Bot } from 'grammy';
 import * as db from './db.js';
 import { escapeHtml } from './util.js';
-import { processNote } from './deepseek.js';
-import { LIMITS } from './config.js';
+import { processNote, onlyLinks } from './deepseek.js';
+import { LIMITS, INBOX_NAME } from './config.js';
 import { transcribe } from './groq.js';
 import { downloadFile, TG_DOWNLOAD_LIMIT } from './telegram.js';
 import { localNowInfo, planReminder, formatWhen, describeRepeat, snoozeHour, tomorrowNine } from './timeutil.js';
@@ -39,7 +39,7 @@ export function createBot(env) {
     ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`, openApp));
 
   bot.command('help', (ctx) => {
-    const base = 'Просто напишите или наговорите заметки (хоть сразу несколько дел): я исправлю текст, разделю на отдельные заметки и разложу по папкам. Покупки собираю в общий список. Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/buy — список покупок с галочками\n/reminders — будущие напоминания\n/help — справка';
+    const base = 'Просто напишите или наговорите заметки (хоть сразу несколько дел): я исправлю текст, разделю на отдельные заметки и разложу по папкам. Покупки собираю в общий список. Если пришлёте только ссылку, сохраню её во «Входящие». Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/buy — список покупок с галочками\n/cancel — отменить ожидание комментария\n/reminders — будущие напоминания\n/help — справка';
     const admin = '\n\nАдмин:\n/invite Имя — ссылка-приглашение\n/revoke Имя — отозвать приглашение\n' +
       '/users — список людей\n/block Имя\n/unblock Имя\n/remove Имя — удалить человека вместе с данными';
     return ctx.reply(base + (ctx.user.is_admin ? admin : ''));
@@ -206,6 +206,35 @@ export function createBot(env) {
     return ctx.reply(msg, { parse_mode: 'HTML', reply_markup: noteKeyboard(noteId, !!plan) });
   }
 
+  // ---------- ссылки: «Входящие» ----------
+  async function saveLinks(ctx, links) {
+    const inbox = await db.getOrCreateFolder(D, ctx.user.id, INBOX_NAME);
+    for (const url of links) {
+      if (await db.findNoteByText(D, ctx.user.id, inbox.id, url)) { await ctx.reply(`Эта ссылка уже во «${INBOX_NAME}»:\n${url}`, { link_preview_options: { is_disabled: true } }); continue; }
+      const noteId = await db.insertNote(D, { userId: ctx.user.id, folderId: inbox.id, text: url, rawText: url });
+      await ctx.reply(`📥 Сохранил во «${INBOX_NAME}»:\n${url}\nКуда поместить ссылку? Можно выбрать папку или оставить здесь: раз в сутки в 12:00 я напомню разобрать.`, {
+        link_preview_options: { is_disabled: true },
+        reply_markup: { inline_keyboard: [
+          [{ text: 'Куда поместить', callback_data: `mvp:${noteId}` }, { text: 'Добавить комментарий', callback_data: `cm:${noteId}` }],
+          [{ text: 'Удалить', callback_data: `del:${noteId}` }],
+        ] },
+      });
+    }
+  }
+
+  bot.callbackQuery(/^cm:(\d+)$/, async (ctx) => {
+    const noteId = Number(ctx.match[1]);
+    if (!(await db.getNote(D, ctx.user.id, noteId))) return ctx.answerCallbackQuery({ text: 'Ссылка не найдена' });
+    await db.setState(D, ctx.user.id, 'comment', noteId, new Date(Date.now() + 10 * 60e3).toISOString());
+    await ctx.answerCallbackQuery();
+    return ctx.reply('Напишите комментарий к этой ссылке одним сообщением (или /cancel, чтобы отменить).');
+  });
+
+  bot.command('cancel', async (ctx) => {
+    await db.clearState(D, ctx.user.id);
+    return ctx.reply('Отменил.');
+  });
+
   // Общая обработка текста (набранного или распознанного из голоса)
   async function saveNote(ctx, text, source) {
     if (text.length > LIMITS.TEXT_MAX_CHARS) {
@@ -213,7 +242,7 @@ export function createBot(env) {
     }
     await ctx.replyWithChatAction('typing').catch(() => {});
 
-    const folders = (await db.listFolders(D, ctx.user.id)).map((f) => f.name);
+    const folders = (await db.listFolders(D, ctx.user.id)).filter((f) => f.kind !== 'inbox').map((f) => f.name);
     const nowIso = new Date().toISOString();
     const when = { ...localNowInfo(ctx.user.tz, nowIso), tz: ctx.user.tz };
     const result = await processNote(env, text, folders, when);
@@ -242,6 +271,19 @@ export function createBot(env) {
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return next(); // команды обрабатываются ниже, неизвестная команда не становится заметкой
     if (!text) return;
+
+    // Одни ссылки: сохраняем во «Входящие» и предлагаем разложить
+    const links = onlyLinks(text);
+    if (links) return saveLinks(ctx, links.slice(0, 10));
+
+    // Ждём комментарий к ссылке (после кнопки «Добавить комментарий»)
+    const st = await db.getState(D, ctx.user.id);
+    if (st && st.kind === 'comment') {
+      await db.clearState(D, ctx.user.id);
+      const ok = text.length <= 500 && (await db.appendToNote(D, ctx.user.id, st.note_id, text, LIMITS.TEXT_MAX_CHARS));
+      return ctx.reply(ok ? 'Добавил комментарий к ссылке.' : 'Не получилось добавить комментарий: он слишком длинный или заметки уже нет.',
+        ok ? { reply_markup: await noteKeyboardFor(ctx.user.id, st.note_id) } : undefined);
+    }
     return saveNote(ctx, text, 'text');
   });
 

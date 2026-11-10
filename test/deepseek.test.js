@@ -65,3 +65,21 @@ test('пустышка вместо текста напоминания отбр
   const r = parseModelReply(JSON.stringify({ text: 'Напомнить через 3 минуты.', folder: 'Задачи', remind: { in_minutes: 3, text: 'Напоминание' } }), folders, 'напомнить через 3 минуты');
   assert.equal(r.notes[0].remind.text, null);
 });
+
+import { extractUrls, onlyLinks } from '../src/deepseek.js';
+test('ссылки извлекаются без хвостовой пунктуации', () => {
+  assert.deepEqual(extractUrls('смотри https://a.com/x?y=1, и (https://b.org/z).'), ['https://a.com/x?y=1', 'https://b.org/z']);
+});
+test('одиночная ссылка и список ссылок распознаются, текст со ссылкой нет', () => {
+  assert.deepEqual(onlyLinks('https://a.com/x'), ['https://a.com/x']);
+  assert.deepEqual(onlyLinks('https://a.com\nhttps://b.com https://a.com'), ['https://a.com', 'https://b.com']);
+  assert.equal(onlyLinks('https://a.com комментарий'), null);
+  assert.equal(onlyLinks('просто текст'), null);
+});
+test('если модель потеряла или изменила ссылку, ответу не верим', () => {
+  const orig = 'добавь https://tool.example/app в мои приложения, удобный планировщик';
+  const lost = JSON.stringify({ notes: [{ text: 'Удобный планировщик', folder: 'Идеи' }], shopping: [] });
+  const kept = JSON.stringify({ notes: [{ text: 'https://tool.example/app Удобный планировщик', folder: 'Мои приложения' }], shopping: [] });
+  assert.equal(parseModelReply(lost, folders, orig), null);
+  assert.equal(parseModelReply(kept, folders, orig).notes[0].folder, 'Мои приложения');
+});

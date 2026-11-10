@@ -148,14 +148,14 @@ async function screenNotes() {
   const [ov] = await Promise.all([api('/api/overview')]);
   if (!ov.ok) return;
   const { folders, shopping } = ov.data;
-  $('folders').innerHTML = folders.map((f) => `<button class="row-card" data-folder="${f.id}" data-name="${esc(f.name)}">
+  $('folders').innerHTML = folders.map((f) => `<button class="row-card" data-folder="${f.id}" data-name="${esc(f.name)}" data-kind="${esc(f.kind ?? '')}">
       <span>📁 ${esc(f.name)}</span><span class="count">${f.n}</span></button>`).join('')
     + `<button class="row-card" data-shop="1"><span>🛒 Список покупок</span><span class="count">${shopping.open}</span></button>
        <button class="ghost wide" id="newFolder">+ Новая папка</button>`;
   $('folders').onclick = async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b.dataset.folder) show(() => screenFolder(Number(b.dataset.folder), b.dataset.name));
+    if (b.dataset.folder) show(() => screenFolder(Number(b.dataset.folder), b.dataset.name, b.dataset.kind || null));
     else if (b.dataset.shop) tab(screenShopping);
     else if (b.id === 'newFolder') {
       const name = await askText('Название папки');
@@ -179,33 +179,75 @@ async function screenNotes() {
   $('results').onclick = (e) => { const c = e.target.closest('[data-note]'); if (c) show(() => screenNote(Number(c.dataset.note))); };
 }
 
+// Превращаем адреса в нажимающиеся ссылки (текст уже экранирован)
+const linkify = (escaped) => escaped.replace(/https?:\/\/[^\s<>"]+/g, (u) => {
+  const m = /[.,;:!?)»\]]+$/.exec(u);
+  const tail = m ? m[0] : '';
+  const url = tail ? u.slice(0, -tail.length) : u;
+  return `<a href="${url}" class="lnk" data-link="1">${url}</a>${tail}`;
+});
+function openExternal(url) { if (tg && tg.openLink) tg.openLink(url); else window.open(url, '_blank'); }
+// Нажатие на ссылку внутри карточки открывает сайт, а не саму заметку
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a[data-link]');
+  if (a) { e.preventDefault(); e.stopPropagation(); openExternal(a.href); }
+}, true);
+
 function noteCards(notes) {
   return notes.map((n) => `<div class="note" data-note="${n.id}">
-      <div class="note-text">${esc(n.text)}</div>
+      <div class="note-text">${linkify(esc(n.text))}</div>
       <div class="meta">${esc(n.folder ?? '')} · ${esc(fmtDate(n.created_at))}${n.reminder ? ` · <span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat ? ' 🔁' : ''}</span>` : ''}</div></div>`).join('');
 }
 
 // ---------- папка ----------
-async function screenFolder(id, name) {
+async function screenFolder(id, name, kind = null) {
+  const protectedFolder = !!kind;
   h(`${subHeader(name)}<div class="card"><input id="fsearch" type="search" placeholder="Поиск в папке" autocomplete="off">
-     <div class="btnrow"><button class="ghost mini" id="ren">Переименовать</button><button class="ghost mini danger" id="del">Удалить папку</button></div></div>
+     ${protectedFolder ? '' : '<div class="btnrow"><button class="ghost mini" id="ren">Переименовать</button><button class="ghost mini danger" id="del">Удалить папку</button></div>'}</div>
      <div id="list"><p class="muted">Загрузка…</p></div>`);
   bindBack();
-  const load = async (q = '') => {
+  let q = '';
+  const load = async () => {
     const r = await api(`/api/notes?folder=${id}&q=${encodeURIComponent(q)}`);
-    if (r.ok) $('list').innerHTML = noteCards(r.data.notes) || `<p class="muted">${q ? 'Ничего не найдено.' : 'В этой папке пока пусто.'}</p>`;
+    if (!r.ok) return;
+    const notes = r.data.notes;
+    if (kind === 'tasks') return drawTasks(notes);
+    $('list').innerHTML = noteCards(notes) || `<p class="muted">${q ? 'Ничего не найдено.' : kind === 'inbox' ? 'Здесь пока пусто. Пришлите боту ссылку, и она появится тут.' : 'В этой папке пока пусто.'}</p>`;
+  };
+  // Задачи: невыполненные сверху, серая полоса «Выполненные», ниже выполненные (зачёркнутые и бледные)
+  const drawTasks = (notes) => {
+    const open = notes.filter((n) => !n.done);
+    const done = notes.filter((n) => n.done).sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
+    const row = (n) => `<div class="task ${n.done ? 'done' : ''}" data-note="${n.id}">
+        <button class="box" data-toggle="${n.id}" aria-label="Отметить">${n.done ? '✓' : ''}</button>
+        <div class="tbody"><div class="ttext">${linkify(esc(n.text))}</div>
+          ${n.reminder ? `<div class="meta"><span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat ? ' 🔁' : ''}</span></div>` : ''}</div>
+        <button class="x" data-del="${n.id}" aria-label="Удалить">✕</button></div>`;
+    $('list').innerHTML = (open.map(row).join('') || `<p class="muted">${q ? 'Ничего не найдено.' : 'Невыполненных задач нет.'}</p>`)
+      + (done.length ? `<div class="donebar">Выполненные · ${done.length}</div>${done.map(row).join('')}` : '');
   };
   load();
   let timer;
-  $('fsearch').oninput = (e) => { clearTimeout(timer); timer = setTimeout(() => load(e.target.value.trim()), 300); };
-  $('list').onclick = (e) => { const c = e.target.closest('[data-note]'); if (c) show(() => screenNote(Number(c.dataset.note))); };
-  $('ren').onclick = async () => {
+  $('fsearch').oninput = (e) => { clearTimeout(timer); timer = setTimeout(() => { q = e.target.value.trim(); load(); }, 300); };
+  $('list').onclick = async (e) => {
+    const tg1 = e.target.closest('[data-toggle]');
+    if (tg1) { await api('/api/notes/toggle', { id: Number(tg1.dataset.toggle) }); haptic1(); return load(); }
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      if (!(await confirmBox('Удалить задачу?'))) return;
+      const r = await api('/api/notes/delete', { id: Number(del.dataset.del) });
+      return r.ok ? load() : notify(errText(r.data.error));
+    }
+    const c = e.target.closest('[data-note]');
+    if (c) show(() => screenNote(Number(c.dataset.note)));
+  };
+  if ($('ren')) $('ren').onclick = async () => {
     const nn = await askText('Новое название', name);
     if (!nn || nn === name) return;
     const r = await api('/api/folders/rename', { id, name: nn });
-    if (r.ok) { current = () => screenFolder(id, nn); current(); } else notify(errText(r.data.error));
+    if (r.ok) { current = () => screenFolder(id, nn, kind); current(); } else notify(errText(r.data.error));
   };
-  $('del').onclick = async () => {
+  if ($('del')) $('del').onclick = async () => {
     if (!(await confirmBox(`Удалить папку «${name}»? Заметки перейдут в «Разное».`))) return;
     const r = await api('/api/folders/delete', { id });
     if (r.ok) back(); else notify(errText(r.data.error));
@@ -224,6 +266,7 @@ async function screenNote(id) {
     <section class="card">
       <textarea id="ntext" maxlength="2000" rows="5">${esc(note.text)}</textarea>
       <select id="nfolder">${folders.map((f) => `<option value="${f.id}" ${f.id === note.folder_id ? 'selected' : ''}>📁 ${esc(f.name)}</option>`).join('')}</select>
+      ${(note.text.match(/https?:\/\/[^\s<>"]+/g) || []).map((u) => u.replace(/[.,;:!?)»\]]+$/, '')).filter((u, i, a) => a.indexOf(u) === i).map((u) => `<button type="button" class="ghost linkbtn" data-open="${esc(u)}">🔗 ${esc(u.length > 40 ? u.slice(0, 40) + '…' : u)}</button>`).join('')}
       <p class="muted small">Создана: ${esc(fmtDate(note.created_at))}</p>
       <button id="save" disabled>Сохранить</button>
     </section>
@@ -235,6 +278,7 @@ async function screenNote(id) {
     </section>
     <button class="ghost danger wide" id="delNote">Удалить заметку</button>`);
   bindBack();
+  document.querySelectorAll('[data-open]').forEach((b) => { b.onclick = () => openExternal(b.dataset.open); });
   const dirty = () => { $('save').disabled = $('ntext').value.trim() === note.text && Number($('nfolder').value) === note.folder_id; };
   $('ntext').oninput = dirty; $('nfolder').onchange = dirty;
   $('save').onclick = async () => {
@@ -524,7 +568,17 @@ async function screenAdmin() {
   const r = await api('/api/me?code=' + encodeURIComponent(startParam));
   if (r.status === 403 && r.data.error === 'blocked') return screenMessage('Блокнот', 'Доступ закрыт.');
   if (!r.ok) return screenMessage('Блокнот', 'Не удалось войти. Откройте приложение заново из Telegram.');
-  if (r.data.state === 'user') { me = r.data.user; applyTheme(me.theme); return screenMain(); }
+  if (r.data.state === 'user') {
+    me = r.data.user; applyTheme(me.theme);
+    screenMain();
+    // Кнопка «Открыть «Входящие»» из ежедневного напоминания
+    if (new URLSearchParams(location.search).get('open') === 'inbox') {
+      const ov = await api('/api/overview');
+      const f = ov.ok && ov.data.folders.find((x) => x.kind === 'inbox');
+      if (f) show(() => screenFolder(f.id, f.name, 'inbox'));
+    }
+    return;
+  }
   applyTheme('auto');
   if (r.data.invite === 'admin' || r.data.invite === 'open') return screenJoin('open');
   screenJoin(r.data.invite === 'none' ? 'missing' : r.data.invite);

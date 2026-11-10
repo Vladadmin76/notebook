@@ -1,6 +1,8 @@
 import * as db from './db.js';
 import { nextRecurrence, parseRrule } from './timeutil.js';
 import { escapeHtml } from './util.js';
+import { utc } from './timeutil.js';
+import { DIGEST_HOUR, INBOX_NAME } from './config.js';
 
 const BATCH = 15; // на бесплатном тарифе Workers ограничено число внешних запросов за один вызов
 
@@ -36,6 +38,34 @@ export async function processTick(env, api, nowIso = new Date().toISOString()) {
       else await db.revertReminder(D, r);                                   // временный сбой: повторим на следующей минуте
       console.error('reminder send failed', r.id, code ?? e?.message);
     }
+  }
+  return sent;
+}
+
+const plural = (n, one, few, many) => {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+};
+export const inboxText = (n) => `📥 Во «Входящих» лежит ${n} ${plural(n, 'неразобранная ссылка', 'неразобранные ссылки', 'неразобранных ссылок')}. Выберите для них папки.`;
+
+// Раз в сутки после 12:00 по местному времени напоминаем о неразобранных ссылках. Когда папка пуста, людей в выборке нет.
+export async function processInboxDigests(env, api, nowIso = new Date().toISOString()) {
+  const D = env.DB;
+  const appUrl = env.PUBLIC_URL ?? 'https://notes.fixtorllc.com';
+  let sent = 0;
+  for (const u of await db.inboxDigestCandidates(D)) {
+    if (sent >= 10) break; // лимит запросов за один вызов
+    const local = utc(nowIso).setZone(u.tz);
+    if (local.hour < DIGEST_HOUR) continue;
+    const today = local.toISODate();
+    if (u.inbox_digest_on === today) continue;
+    if (!(await db.claimDigest(D, u.id, today))) continue;
+    try {
+      await api.sendMessage(u.id, inboxText(u.c), { reply_markup: { inline_keyboard: [[{ text: `Открыть «${INBOX_NAME}»`, web_app: { url: `${appUrl}/?open=inbox` } }]] } });
+      sent++;
+    } catch (e) { console.error('digest send failed', u.id, e?.error_code ?? e?.message); }
   }
   return sent;
 }

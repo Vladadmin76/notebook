@@ -2,7 +2,7 @@ import { createBot } from './bot.js';
 import * as db from './db.js';
 import { validateInitData } from './auth.js';
 import { json, isValidTz } from './util.js';
-import { processTick } from './reminders.js';
+import { processTick, processInboxDigests } from './reminders.js';
 import { handleAppApi, serveIcs } from './appapi.js';
 import { verifyIcs } from './ics.js';
 
@@ -159,7 +159,8 @@ export default {
       if (!env.CRON_SECRET || request.headers.get('X-Cron-Secret') !== env.CRON_SECRET) return new Response('Forbidden', { status: 403 });
       const { bot } = getBot(env);
       const sent = await processTick(env, bot.api);
-      return json({ sent });
+      const digests = await processInboxDigests(env, bot.api);
+      return json({ sent, digests });
     }
 
     if (path === '/ics' && request.method === 'GET') return serveIcs(env, url, verifyIcs); // ссылка с подписью, без входа через Telegram

@@ -46,7 +46,7 @@ export async function handleAppApi({ request, env, url, user, body }) {
   if (path === '/api/folders/rename' && post) {
     const f = await db.getFolder(D, user.id, intOr(body.id));
     if (!f) return json({ error: 'not_found' }, 404);
-    if (f.name === FALLBACK_FOLDER) return json({ error: 'protected' }, 400);
+    if (f.kind) return json({ error: 'protected' }, 400); // «Задачи», «Разное», «Входящие» не переименовываются и не удаляются
     const name = String(body.name ?? '').trim().replace(/\s+/g, ' ');
     if (!FOLDER_NAME_RE.test(name)) return json({ error: 'bad_name' }, 400);
     const res = await db.renameFolder(D, user.id, f.id, name);
@@ -55,7 +55,7 @@ export async function handleAppApi({ request, env, url, user, body }) {
   if (path === '/api/folders/delete' && post) {
     const f = await db.getFolder(D, user.id, intOr(body.id));
     if (!f) return json({ error: 'not_found' }, 404);
-    if (f.name === FALLBACK_FOLDER) return json({ error: 'protected' }, 400);
+    if (f.kind) return json({ error: 'protected' }, 400);
     await db.deleteFolder(D, user.id, f.id, FALLBACK_FOLDER);
     return json({ ok: true });
   }
@@ -96,6 +96,12 @@ export async function handleAppApi({ request, env, url, user, body }) {
       patch.folderId = f.id;
     }
     return (await db.updateNote(D, user.id, id, patch)) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
+  }
+  if (path === '/api/notes/toggle' && post) {
+    const id = intOr(body.id);
+    if (!(await db.toggleNoteDone(D, user.id, id))) return json({ error: 'not_found' }, 404);
+    const n = await db.getNote(D, user.id, id);
+    return json({ done: n.done, done_at: n.done_at });
   }
   if (path === '/api/notes/delete' && post) {
     return (await db.deleteNote(D, user.id, intOr(body.id))) ? json({ ok: true }) : json({ error: 'not_found' }, 404);

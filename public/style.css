@@ -82,3 +82,16 @@ textarea { resize: vertical; line-height: 1.4; }
 .modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); padding: 16px; }
 .sheet { width: 100%; max-width: 360px; background: var(--card); border-radius: 16px; padding: 18px; }
 .sheet h3 { margin: 0 0 8px; text-transform: none; font-size: 1.1rem; color: var(--fg); letter-spacing: 0; }
+
+/* ---------- задачи, ссылки ---------- */
+a.lnk { color: var(--accent); text-decoration: underline; word-break: break-all; }
+button.linkbtn { width: 100%; margin: 6px 0 0; text-align: left; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task { display: flex; align-items: flex-start; gap: 12px; background: var(--card); border-radius: 14px; padding: 12px 10px 12px 12px; margin-bottom: 8px; cursor: pointer; }
+.task .box { flex: 0 0 26px; width: 26px; height: 26px; margin: 1px 0 0; padding: 0; border: 2px solid var(--accent); border-radius: 50%; background: transparent; color: #fff; font-size: .95rem; line-height: 1; }
+.task .tbody { flex: 1; min-width: 0; } .task .ttext { white-space: pre-wrap; word-break: break-word; }
+.task .x { width: 32px; margin: 0; padding: 4px; background: transparent; color: var(--muted); font-size: 1rem; }
+/* Серая полоса-разделитель в цвет темы, надпись обычным цветом текста */
+.donebar { margin: 18px 0 10px; padding: 9px 14px; background: var(--line); color: var(--fg); border-radius: 10px; font-weight: 600; font-size: .9rem; }
+.task.done { opacity: .55; }
+.task.done .ttext { text-decoration: line-through; color: var(--muted); }
+.task.done .box { background: var(--muted); border-color: var(--muted); }
