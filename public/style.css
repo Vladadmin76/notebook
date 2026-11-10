@@ -24,4 +24,7 @@ button:disabled { opacity:.6; } button.ghost { background:transparent; color:var
 .tag.red { background:var(--err); color:#fff; }
 button.back { width:auto; padding:6px 12px; margin:0 0 10px; }
 .link { word-break:break-all; font-size:.85rem; background:var(--bg); padding:10px; border-radius:8px; }
-button.menu { display:block; width:100%; padding:16px; text-align:left; font-size:1.05rem; background:var(--card); color:var(--fg); border:0; border-radius:14px; }
+.topbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between;
+          margin:-12px -16px 12px; padding:10px 16px; background:var(--bg); }
+.brand { font-weight:700; font-size:1.15rem; }
+button.gear { width:44px; height:44px; margin:0; padding:0; font-size:1.4rem; line-height:1; border-radius:12px; background:var(--card); color:var(--fg); }

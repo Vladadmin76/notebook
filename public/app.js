@@ -77,11 +77,14 @@ function screenJoin(invite) {
 // ---------- главный экран ----------
 function screenMain() {
   app.onclick = null;
-  h(`<section class="card">
+  h(`<header class="topbar">
+      <span class="brand">Блокнот</span>
+      <button id="settingsBtn" class="gear nosel" aria-label="Настройки">⚙️</button>
+    </header>
+    <section class="card">
       <h1>Привет, ${esc(me.label)}!</h1>
       <p class="muted">Заметки, папки и календарь появятся здесь.</p>
-    </section>
-    <button id="settingsBtn" class="menu nosel">⚙️ Настройки</button>`);
+    </section>`);
   // Нажатие открывает настройки, удержание 2 секунды открывает панель управления (только у админа)
   holdToOpen($('settingsBtn'), screenSettings, me.is_admin ? screenAdmin : null);
 }
