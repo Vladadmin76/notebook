@@ -134,17 +134,20 @@ function screenSettings() {
 }
 
 function holdToOpen(el, onTap, onHold) {
-  let timer = null;
-  let held = false;
+  let timer = null, held = false, x0 = 0, y0 = 0;
   const cancel = () => { clearTimeout(timer); timer = null; };
-  el.addEventListener('pointerdown', () => {
-    held = false; cancel();
+  el.addEventListener('pointerdown', (e) => {
+    held = false; cancel(); x0 = e.clientX; y0 = e.clientY;
     if (onHold) timer = setTimeout(() => { timer = null; held = true; haptic(); onHold(); }, HOLD_MS);
   });
-  ['pointerleave', 'pointercancel', 'pointermove'].forEach((ev) => el.addEventListener(ev, cancel));
-  el.addEventListener('pointerup', cancel);
+  // Палец всегда немного дрожит: отменяем удержание, только если он ушёл дальше 12 px
+  el.addEventListener('pointermove', (e) => {
+    if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 12) cancel();
+  });
+  ['pointerup', 'pointercancel'].forEach((ev) => el.addEventListener(ev, cancel));
   el.addEventListener('click', () => { if (!held) onTap(); held = false; });
-  el.addEventListener('contextmenu', (e) => e.preventDefault());
+  // Запрет системного меню долгого нажатия и выделения (iOS/Android)
+  ['contextmenu', 'selectstart', 'dragstart'].forEach((ev) => el.addEventListener(ev, (e) => e.preventDefault()));
 }
 
 // ---------- панель управления (админ) ----------
