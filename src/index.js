@@ -111,12 +111,6 @@ export default {
       return json({ sent: 0 });
     }
 
-    if (path === '/diag') { // ВРЕМЕННО: удалить после отладки
-      const t = env.TG_BOT_TOKEN ?? '';
-      return json({ len: t.length, botId: t.split(':')[0], trimmedLen: t.trim().length, hasColon: t.includes(':'),
-        webhookSecretLen: (env.TG_WEBHOOK_SECRET ?? '').length, adminId: env.ADMIN_TELEGRAM_ID });
-    }
-
     if (path.startsWith('/api/')) return handleApi(request, env, url, ctx);
 
     return env.ASSETS.fetch(request); // приложение: index.html, app.js, style.css
