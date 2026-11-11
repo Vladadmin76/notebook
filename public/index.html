@@ -9,6 +9,27 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<!-- Корзина: один корпус, пустая и полная отличаются окошками (чёрные и белые) и бумажками. Цвета берутся из темы (style.css). -->
+<symbol id="bin-body" viewBox="0 0 64 64">
+  <path d="M12.5 22 L51.5 22 L47.6 54.2 Q47.3 56.5 45 56.5 L19 56.5 Q16.7 56.5 16.4 54.2 Z" fill="var(--b1)"/>
+  <path d="M40 22 L51.5 22 L47.6 54.2 Q47.3 56.5 45 56.5 L38 56.5 Z" fill="var(--b2)" fill-opacity=".55"/>
+  <path d="M14 22 L19 22 L21.6 56.5 L19 56.5 Q16.7 56.5 16.4 54.2 Z" fill="#fff" fill-opacity=".28"/>
+</symbol>
+<symbol id="bin-slots-empty" viewBox="0 0 64 64"><g stroke="#0b0e13" stroke-opacity=".92" stroke-width="3" stroke-linecap="round"><path d="M23 29.5 L24.3 50"/><path d="M32 29.5 L32 50"/><path d="M41 29.5 L39.7 50"/></g></symbol>
+<symbol id="bin-slots-full" viewBox="0 0 64 64"><g stroke="#fff" stroke-opacity=".97" stroke-width="3" stroke-linecap="round"><path d="M23 29.5 L24.3 50"/><path d="M32 29.5 L32 50"/><path d="M41 29.5 L39.7 50"/></g></symbol>
+<symbol id="bin-rim" viewBox="0 0 64 64"><ellipse cx="32" cy="22" rx="19.5" ry="4.6" fill="var(--rim)"/><ellipse cx="32" cy="22.4" rx="16.6" ry="3.1" fill="var(--in)"/></symbol>
+<symbol id="bin-lip" viewBox="0 0 64 64"><path d="M12.5 22.2 A19.5 4.6 0 0 0 51.5 22.2" fill="none" stroke="var(--rim)" stroke-width="3.2" stroke-linecap="round"/></symbol>
+<symbol id="bin-papers" viewBox="0 0 64 64">
+  <g stroke="var(--pline)" stroke-width="1.3" stroke-linejoin="round">
+    <path d="M19.5 23 L21.6 8.6 L35.2 6.4 L36.6 23 Z" fill="var(--paper)"/>
+    <path d="M30 23 L33.2 10.8 L46.4 14.4 L43.2 23 Z" fill="var(--paper)"/>
+    <path d="M24 23 L27 12.4 L40 11.6 L40 23 Z" fill="var(--pfold)"/></g>
+  <g stroke="var(--pline)" stroke-opacity=".7" stroke-width="1.1" stroke-linecap="round"><path d="M23.4 12.6 L33 11.2"/><path d="M23 16.4 L33.6 15"/><path d="M33 17.6 L42.4 20.2"/><path d="M34.2 14 L42.6 16.3"/></g>
+</symbol>
+<symbol id="bin-empty" viewBox="0 0 64 64"><use href="#bin-body"/><use href="#bin-slots-empty"/><use href="#bin-rim"/><use href="#bin-lip"/></symbol>
+<symbol id="bin-full" viewBox="0 0 64 64"><use href="#bin-body"/><use href="#bin-slots-full"/><use href="#bin-rim"/><use href="#bin-papers"/><use href="#bin-lip"/></symbol>
+</defs></svg>
 <main id="app"><p class="muted">Загрузка…</p></main>
 <script src="/app.js"></script>
 </body>

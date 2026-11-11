@@ -126,6 +126,7 @@ const tF = (await call(A, '/api/folders/create', { name: 'Корзинная п�
 await call(A, '/api/folders/delete', { id: tF });
 check('в корзине админа есть удалённая заметка и папка', (await call(A, '/api/trash')).data.notes.some((n) => n.id === TN) && (await call(A, '/api/trash')).data.folders.some((f) => f.id === tF));
 check('корзина второго человека не содержит чужого', !JSON.stringify((await call(Bd, '/api/trash')).data).includes('Альфа') && (await call(Bd, '/api/trash')).data.folders.length === 0);
+check('значок корзины второго человека не показывает чужое (счётчик корзины только свой)', (await call(Bd, '/api/trash/count')).data.count === 0 && (await call(A, '/api/trash/count')).data.count >= 2);
 check('чужая удалённая заметка по номеру: 404', (await call(Bd, `/api/trash/note?id=${TN}`)).status === 404);
 check('чужая удалённая папка по номеру: 404', (await call(Bd, `/api/trash/folder?id=${tF}`)).status === 404);
 check('возврат чужой заметки из корзины: 404', (await call(Bd, '/api/trash/restore', { type: 'note', id: TN })).status === 404);

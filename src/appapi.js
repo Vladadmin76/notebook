@@ -168,6 +168,7 @@ export async function handleAppApi({ request, env, url, user, body }) {
 
   // ---------- корзина ----------
   if (path === '/api/trash' && get) return json(await trash.trashOverview(D, user.id));
+  if (path === '/api/trash/count' && get) { const n = await trash.trashCount(D, user.id); return json({ count: n, full: n > 0 }); }
   if (path === '/api/trash/folder' && get) {
     const r = await trash.trashFolderContents(D, user.id, intOr(url.searchParams.get('id')));
     return r ? json(r) : json({ error: 'not_found' }, 404);

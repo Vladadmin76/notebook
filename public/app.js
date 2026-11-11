@@ -17,6 +17,7 @@ async function api(path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await r.json().catch(() => ({}));
+  if (r.ok && body && TRASH_ACTIONS.test(path)) setTimeout(refreshTrashIcon, 0); // после удаления, возврата или очистки обновляем значок
   return { ok: r.ok, status: r.status, data };
 }
 
@@ -124,14 +125,28 @@ const errText = (code) => ({
   past: 'Это время уже прошло.', bad_time: 'Не удалось понять время.', bad_text: 'Текст пустой или слишком длинный (до 2000 знаков).',
 }[code] || 'Не получилось. Попробуйте ещё раз.');
 
+// Значок корзины: пустой или полный. Состояние подтягивается при показе экрана и после действий, меняющих корзину.
+let trashFull = false;
+const binIcon = () => `<svg aria-hidden="true"><use href="#${trashFull ? 'bin-full' : 'bin-empty'}"></use></svg>`;
+async function refreshTrashIcon() {
+  const r = await api('/api/trash/count');
+  if (!r.ok) return;
+  trashFull = !!r.data.full;
+  document.querySelectorAll('.trashbtn').forEach((b) => { b.innerHTML = binIcon(); b.setAttribute('aria-label', trashFull ? 'Корзина (есть удалённое)' : 'Корзина (пусто)'); });
+}
+const TRASH_ACTIONS = /^\/api\/(notes\/delete|folders\/delete|shopping\/(delete|clear|lists\/delete)|trash\/(restore|purge|empty))$/;
+
 const TABS = [['notes', '📁', 'Заметки'], ['shop', '🛒', 'Покупки'], ['cal', '📅', 'Календарь']];
 function frame(active, inner) {
   h(`<header class="topbar"><span class="brand">Блокнот</span>
-      <button id="settingsBtn" class="gear nosel" aria-label="Настройки">⚙️</button></header>
+      <div class="topbtns"><button id="trashBtn" class="gear trashbtn" aria-label="Корзина">${binIcon()}</button>
+        <button id="settingsBtn" class="gear nosel" aria-label="Настройки">⚙️</button></div></header>
     ${inner}
     <nav class="tabbar">${TABS.map(([k, ic, t]) => `<button data-tab="${k}" class="${k === active ? 'on' : ''}"><span>${ic}</span>${t}</button>`).join('')}</nav>`);
   // Нажатие открывает настройки, удержание 2 секунды открывает панель управления (только у админа)
   holdToOpen($('settingsBtn'), () => show(screenSettings), me.is_admin ? () => show(screenAdmin) : null);
+  $('trashBtn').onclick = () => show(screenTrash);
+  refreshTrashIcon();
   document.querySelector('.tabbar').onclick = (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -553,7 +568,6 @@ function screenSettings() {
       ${me.tz !== browserTz ? '<button id="tzfix" class="ghost">Взять с устройства</button>' : ''}
       <h3>Инструменты</h3>
       <button class="ghost wide" id="pwBtn">🔑 Генератор паролей</button>
-      <button class="ghost wide" id="trashBtn">🗑 Корзина</button>
       <h3>Бот</h3>
       <p id="botstate">${me.can_write ? '✅ Бот подключён и может писать вам.' : 'Разрешите боту писать вам, чтобы он присылал напоминания и принимал заметки.'}</p>
       ${me.can_write ? '' : '<button id="connect">Подключить бота</button>'}
@@ -562,7 +576,6 @@ function screenSettings() {
 
   bindBack();
   $('pwBtn').onclick = () => show(screenPasswords);
-  $('trashBtn').onclick = () => show(screenTrash);
   $('themes').onclick = async (e) => {
     const v = e.target.dataset && e.target.dataset.v;
     if (!v) return;

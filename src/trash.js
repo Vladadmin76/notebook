@@ -28,6 +28,16 @@ export async function trashOverview(D, userId) {
   return { days: TRASH_DAYS, folders: folders.map(withExp), notes: notes.map(withExp), lists: lists.map(withExp), items: items.map(withExp) };
 }
 
+// Сколько записей лежит в корзине (папка с заметками, список с пунктами считаются одной записью); по нему меняется значок
+export async function trashCount(D, userId) {
+  const r = await D.prepare(`SELECT
+      (SELECT COUNT(*) FROM folders WHERE user_id = ?1 AND deleted_at IS NOT NULL)
+    + (SELECT COUNT(*) FROM notes WHERE user_id = ?1 AND deleted_at IS NOT NULL AND deleted_with_folder IS NULL)
+    + (SELECT COUNT(*) FROM shopping_lists WHERE user_id = ?1 AND deleted_at IS NOT NULL)
+    + (SELECT COUNT(*) FROM shopping_items WHERE user_id = ?1 AND deleted_at IS NOT NULL AND deleted_with_list IS NULL) AS n`).bind(userId).first();
+  return r.n;
+}
+
 export async function trashFolderContents(D, userId, folderId) {
   const f = await D.prepare('SELECT id, orig_name AS name, deleted_at FROM folders WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL').bind(folderId, userId).first();
   if (!f) return null;

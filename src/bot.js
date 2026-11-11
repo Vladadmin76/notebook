@@ -430,7 +430,7 @@ export function createBot(env) {
     const id = Number(ctx.match[1]);
     const ok = await db.deleteNote(D, ctx.user.id, id);
     await ctx.answerCallbackQuery({ text: ok ? 'Удалено' : 'Уже удалено' });
-    return ctx.editMessageText(`Заметка удалена. Она хранится в корзине ${TRASH_DAYS} дней (в приложении: ⚙️ Настройки → Корзина).`,
+    return ctx.editMessageText(`Заметка удалена. Она хранится в корзине ${TRASH_DAYS} дней (в приложении: значок корзины вверху).`,
       { reply_markup: { inline_keyboard: [[{ text: 'Вернуть', callback_data: `un:${id}` }]] } });
   });
 

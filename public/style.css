@@ -1,5 +1,5 @@
-:root { --digit:#0b6e8a; --sym:#b4432f; --good:#2e7d4f; --warn:#a86a0a; --bg:#f2f3f5; --fg:#1b1f24; --card:#fff; --muted:#6b7280; --accent:#2a7de1; --line:#d9dce1; --err:#d33; }
-:root[data-theme="dark"] { --digit:#5cc4dd; --sym:#f08a70; --good:#6cc58e; --warn:#e0ae4a; --bg:#14171b; --fg:#e8eaed; --card:#1e2227; --muted:#9aa1ab; --line:#313740; --err:#ff6b6b; }
+:root { --b1:#9aa4b2; --b2:#6f7a8a; --rim:#c3cad4; --in:#3b4452; --paper:#fff; --pline:#9aa4b2; --pfold:#e3e8ee; --digit:#0b6e8a; --sym:#b4432f; --good:#2e7d4f; --warn:#a86a0a; --bg:#f2f3f5; --fg:#1b1f24; --card:#fff; --muted:#6b7280; --accent:#2a7de1; --line:#d9dce1; --err:#d33; }
+:root[data-theme="dark"] { --b1:#b5bdc9; --b2:#8791a0; --rim:#d9dee6; --in:#0e1116; --paper:#f4f6f9; --pline:#8791a0; --pfold:#cfd6df; --digit:#5cc4dd; --sym:#f08a70; --good:#6cc58e; --warn:#e0ae4a; --bg:#14171b; --fg:#e8eaed; --card:#1e2227; --muted:#9aa1ab; --line:#313740; --err:#ff6b6b; }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
        padding:12px max(16px, env(safe-area-inset-left)) 24px; }
@@ -145,3 +145,7 @@ button.copied { background: var(--good); }
 .tinfo { min-width: 0; flex: 1; cursor: pointer; } .ttitle { word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .trow .acts { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
 .tview { white-space: pre-wrap; word-break: break-word; padding: 4px 0 8px; }
+
+/* значок корзины рядом с шестерёнкой */
+.topbtns { display: flex; gap: 8px; }
+button.trashbtn { padding: 0; } button.trashbtn svg { width: 30px; height: 30px; display: block; margin: 0 auto; }
