@@ -2,7 +2,8 @@ import { Bot } from 'grammy';
 import * as db from './db.js';
 import { escapeHtml } from './util.js';
 import { processNote, onlyLinks } from './deepseek.js';
-import { LIMITS, INBOX_NAME } from './config.js';
+import { LIMITS, INBOX_NAME, FOLDER_NAME_RE, TRASH_DAYS } from './config.js';
+import * as trash from './trash.js';
 import { transcribe } from './groq.js';
 import { downloadFile, TG_DOWNLOAD_LIMIT } from './telegram.js';
 import { localNowInfo, planReminder, formatWhen, describeRepeat, snoozeHour, tomorrowNine } from './timeutil.js';
@@ -11,6 +12,19 @@ const REFUSAL = 'Бот работает по приглашению. Попро
 
 export function createBot(env) {
   const bot = new Bot(env.TG_BOT_TOKEN, {
+    // Данные о боте известны заранее (номер стоит в начале токена), поэтому не обращаемся к Telegram за getMe:
+    // меньше запросов при каждом старте и нет зависания, если Telegram на миг недоступен
+    botInfo: {
+      id: Number(String(env.TG_BOT_TOKEN).split(':')[0]),
+      is_bot: true,
+      first_name: 'Блокнот',
+      username: env.BOT_USERNAME,
+      can_join_groups: true,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false,
+      can_connect_to_business: false,
+      has_main_web_app: true,
+    },
     // TG_API_ROOT нужен только для локальных проверок с заглушкой Telegram
     client: env.TG_API_ROOT ? { apiRoot: env.TG_API_ROOT } : undefined,
   });
@@ -39,7 +53,7 @@ export function createBot(env) {
     ctx.reply(`Привет, ${ctx.user.label}! Пишите или наговаривайте заметки, я их запишу. /help — справка.`, openApp));
 
   bot.command('help', (ctx) => {
-    const base = 'Просто напишите или наговорите заметки (хоть сразу несколько дел): я исправлю текст, разделю на отдельные заметки и разложу по папкам. Покупки собираю в общий список. Если пришлёте только ссылку, сохраню её во «Входящие». Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/buy — списки покупок с галочками (/buy Costco покажет один магазин)\n/cancel — отменить ожидание комментария\n/reminders — будущие напоминания\n/help — справка';
+    const base = 'Просто напишите или наговорите заметки (хоть сразу несколько дел): я исправлю текст, разделю на отдельные заметки и разложу по папкам. Покупки собираю в общий список. Если пришлёте только ссылку, сохраню её во «Входящие». Если назовёте время («завтра в 9», «через 2 часа», «каждый понедельник»), поставлю напоминание.\n\nКоманды:\n/folders — папки и число заметок\n/list — последние заметки\n/buy — списки покупок с галочками (/buy Costco покажет один магазин)\n/cancel — отменить ожидание (комментария или названия папки)\n/reminders — будущие напоминания\n/help — справка';
     const admin = '\n\nАдмин:\n/invite Имя — ссылка-приглашение\n/revoke Имя — отозвать приглашение\n' +
       '/users — список людей\n/block Имя\n/unblock Имя\n/remove Имя — удалить человека вместе с данными';
     return ctx.reply(base + (ctx.user.is_admin ? admin : ''));
@@ -333,6 +347,17 @@ export function createBot(env) {
 
     // Ждём комментарий к ссылке (после кнопки «Добавить комментарий»)
     const st = await db.getState(D, ctx.user.id);
+    if (st && st.kind === 'newfolder') {
+      await db.clearState(D, ctx.user.id);
+      const name = text.replace(/\s+/g, ' ');
+      if (!FOLDER_NAME_RE.test(name)) return ctx.reply('Название папки: до 30 знаков, буквы, цифры, пробел. Нажмите «+ Новая папка» ещё раз.');
+      // Если такая папка уже есть, заметка просто переезжает в неё
+      let folder = await db.getFolderByName(D, ctx.user.id, name);
+      if (!folder) folder = await db.getOrCreateFolder(D, ctx.user.id, name);
+      const ok = await db.moveNote(D, ctx.user.id, st.note_id, folder.id);
+      return ctx.reply(ok ? `Перенёс в папку «${folder.name}».` : 'Не получилось: заметки уже нет.',
+        ok ? { reply_markup: await noteKeyboardFor(ctx.user.id, st.note_id) } : undefined);
+    }
     if (st && st.kind === 'comment') {
       await db.clearState(D, ctx.user.id);
       const ok = text.length <= 500 && (await db.appendToNote(D, ctx.user.id, st.note_id, text, LIMITS.TEXT_MAX_CHARS));
@@ -370,6 +395,7 @@ export function createBot(env) {
     if (!note) return ctx.answerCallbackQuery({ text: 'Заметка не найдена' });
     const folders = await db.listFolders(D, ctx.user.id);
     const rows = folders.map((f) => [{ text: `${f.id === note.folder_id ? '✓ ' : ''}${f.name}`, callback_data: `mv:${noteId}:${f.id}` }]);
+    rows.push([{ text: '+ Новая папка', callback_data: `mvn:${noteId}` }]);
     rows.push([{ text: 'Отмена', callback_data: `mvc:${noteId}` }]);
     await ctx.answerCallbackQuery();
     return ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: rows } });
@@ -390,10 +416,29 @@ export function createBot(env) {
       { parse_mode: 'HTML', reply_markup: await noteKeyboardFor(ctx.user.id, noteId) });
   });
 
+  // «Новая папка»: ждём название следующим сообщением
+  bot.callbackQuery(/^mvn:(\d+)$/, async (ctx) => {
+    const noteId = Number(ctx.match[1]);
+    if (!(await db.getNote(D, ctx.user.id, noteId))) return ctx.answerCallbackQuery({ text: 'Заметка не найдена' });
+    await db.setState(D, ctx.user.id, 'newfolder', noteId, new Date(Date.now() + 10 * 60e3).toISOString());
+    await ctx.answerCallbackQuery();
+    return ctx.reply('Напишите название новой папки одним сообщением (или /cancel, чтобы отменить).');
+  });
+
+  // Удаление: заметка уходит в корзину, рядом кнопка «Вернуть»
   bot.callbackQuery(/^del:(\d+)$/, async (ctx) => {
-    const ok = await db.deleteNote(D, ctx.user.id, Number(ctx.match[1]));
+    const id = Number(ctx.match[1]);
+    const ok = await db.deleteNote(D, ctx.user.id, id);
     await ctx.answerCallbackQuery({ text: ok ? 'Удалено' : 'Уже удалено' });
-    return ctx.editMessageText('Заметка удалена.');
+    return ctx.editMessageText(`Заметка удалена. Она хранится в корзине ${TRASH_DAYS} дней (в приложении: ⚙️ Настройки → Корзина).`,
+      { reply_markup: { inline_keyboard: [[{ text: 'Вернуть', callback_data: `un:${id}` }]] } });
+  });
+
+  bot.callbackQuery(/^un:(\d+)$/, async (ctx) => {
+    const r = await trash.restoreNote(D, ctx.user.id, Number(ctx.match[1]));
+    if (!r) return ctx.answerCallbackQuery({ text: 'Уже нельзя вернуть' });
+    await ctx.answerCallbackQuery({ text: 'Вернул' });
+    return ctx.editMessageText(`Вернул заметку в папку «${r.folder}».`).catch(() => {});
   });
 
   // ---------- напоминания ----------

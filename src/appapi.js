@@ -6,6 +6,7 @@ import { json } from './util.js';
 import { LIMITS } from './config.js';
 import { utc, isoUtc, planReminder, nextRecurrence, parseRrule, describeRepeat, formatWhen } from './timeutil.js';
 import { buildIcs, googleCalendarUrl, signIcs } from './ics.js';
+import * as trash from './trash.js';
 
 const FALLBACK_FOLDER = 'Разное';
 const FOLDER_NAME_RE = /^[\p{L}\p{N} .,'&-]{1,30}$/u;
@@ -56,7 +57,7 @@ export async function handleAppApi({ request, env, url, user, body }) {
     const f = await db.getFolder(D, user.id, intOr(body.id));
     if (!f) return json({ error: 'not_found' }, 404);
     if (f.kind) return json({ error: 'protected' }, 400);
-    await db.deleteFolder(D, user.id, f.id, FALLBACK_FOLDER);
+    await db.deleteFolder(D, user.id, f.id); // папка с заметками уходит в корзину
     return json({ ok: true });
   }
 
@@ -163,6 +164,33 @@ export async function handleAppApi({ request, env, url, user, body }) {
     }
     for (const d of Object.keys(days)) days[d].sort((a, b) => a.time.localeCompare(b.time));
     return json({ month, days });
+  }
+
+  // ---------- корзина ----------
+  if (path === '/api/trash' && get) return json(await trash.trashOverview(D, user.id));
+  if (path === '/api/trash/folder' && get) {
+    const r = await trash.trashFolderContents(D, user.id, intOr(url.searchParams.get('id')));
+    return r ? json(r) : json({ error: 'not_found' }, 404);
+  }
+  if (path === '/api/trash/note' && get) {
+    const n = await trash.trashNote(D, user.id, intOr(url.searchParams.get('id')));
+    return n ? json({ note: n }) : json({ error: 'not_found' }, 404);
+  }
+  if (path === '/api/trash/restore' && post) {
+    const id = intOr(body.id);
+    const fn = { note: trash.restoreNote, folder: trash.restoreFolder, item: trash.restoreItem, list: trash.restoreList }[body.type];
+    if (!fn || Number.isNaN(id)) return json({ error: 'bad_request' }, 400);
+    const res = await fn(D, user.id, id);
+    return res ? json({ ok: true, ...res }) : json({ error: 'not_found' }, 404);
+  }
+  if (path === '/api/trash/purge' && post) {
+    const id = intOr(body.id);
+    if (Number.isNaN(id) || !['note', 'folder', 'item', 'list'].includes(body.type)) return json({ error: 'bad_request' }, 400);
+    return (await trash.purgeEntry(D, user.id, body.type, id)) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
+  }
+  if (path === '/api/trash/empty' && post) {
+    await trash.emptyTrash(D, user.id);
+    return json({ ok: true });
   }
 
   // ---------- .ics и Google Календарь ----------

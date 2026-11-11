@@ -148,7 +148,8 @@ async function screenNotes() {
       <div id="results"></div></div><div id="folders"><p class="muted">Загрузка…</p></div>`);
   const [ov] = await Promise.all([api('/api/overview')]);
   if (!ov.ok) return;
-  const { folders } = ov.data;
+  // Пустая папка «Входящие» не показывается; появится сама, как только в ней окажется ссылка
+  const folders = ov.data.folders.filter((f) => !(f.kind === 'inbox' && f.n === 0));
   $('folders').innerHTML = folders.map((f) => `<button class="row-card" data-folder="${f.id}" data-name="${esc(f.name)}" data-kind="${esc(f.kind ?? '')}">
       <span>📁 ${esc(f.name)}</span><span class="count">${f.n}</span></button>`).join('')
     + `<button class="ghost wide" id="newFolder">+ Новая папка</button>`;
@@ -233,7 +234,7 @@ async function screenFolder(id, name, kind = null) {
     if (tg1) { await api('/api/notes/toggle', { id: Number(tg1.dataset.toggle) }); haptic1(); return load(); }
     const del = e.target.closest('[data-del]');
     if (del) {
-      if (!(await confirmBox('Удалить задачу?'))) return;
+      if (!(await confirmBox('Удалить задачу? Она уйдёт в корзину на 7 дней.'))) return;
       const r = await api('/api/notes/delete', { id: Number(del.dataset.del) });
       return r.ok ? load() : notify(errText(r.data.error));
     }
@@ -247,7 +248,7 @@ async function screenFolder(id, name, kind = null) {
     if (r.ok) { current = () => screenFolder(id, nn, kind); current(); } else notify(errText(r.data.error));
   };
   if ($('del')) $('del').onclick = async () => {
-    if (!(await confirmBox(`Удалить папку «${name}»? Заметки перейдут в «Разное».`))) return;
+    if (!(await confirmBox(`Удалить папку «${name}»? Она вместе со всеми заметками уйдёт в корзину на 7 дней.`))) return;
     const r = await api('/api/folders/delete', { id });
     if (r.ok) back(); else notify(errText(r.data.error));
   };
@@ -264,7 +265,7 @@ async function screenNote(id) {
   h(`${subHeader('Заметка')}
     <section class="card">
       <textarea id="ntext" maxlength="2000" rows="5">${esc(note.text)}</textarea>
-      <select id="nfolder">${folders.map((f) => `<option value="${f.id}" ${f.id === note.folder_id ? 'selected' : ''}>📁 ${esc(f.name)}</option>`).join('')}</select>
+      <select id="nfolder">${folders.map((f) => `<option value="${f.id}" ${f.id === note.folder_id ? 'selected' : ''}>📁 ${esc(f.name)}</option>`).join('')}<option value="__new__">+ Новая папка…</option></select>
       ${(note.text.match(/https?:\/\/[^\s<>"]+/g) || []).map((u) => u.replace(/[.,;:!?)»\]]+$/, '')).filter((u, i, a) => a.indexOf(u) === i).map((u) => `<button type="button" class="ghost linkbtn" data-open="${esc(u)}">🔗 ${esc(u.length > 40 ? u.slice(0, 40) + '…' : u)}</button>`).join('')}
       <p class="muted small">Создана: ${esc(fmtDate(note.created_at))}</p>
       <button id="save" disabled>Сохранить</button>
@@ -279,14 +280,37 @@ async function screenNote(id) {
   bindBack();
   document.querySelectorAll('[data-open]').forEach((b) => { b.onclick = () => openExternal(b.dataset.open); });
   const dirty = () => { $('save').disabled = $('ntext').value.trim() === note.text && Number($('nfolder').value) === note.folder_id; };
-  $('ntext').oninput = dirty; $('nfolder').onchange = dirty;
+  $('ntext').oninput = dirty;
+  $('nfolder').onchange = async () => {
+    const sel = $('nfolder');
+    if (sel.value !== '__new__') return dirty();
+    // Новая папка прямо при переносе: если такая уже есть, заметка просто переедет в неё
+    const revert = () => { sel.value = String(note.folder_id); dirty(); };
+    const name = await askText('Название новой папки');
+    if (!name) return revert();
+    const r = await api('/api/folders/create', { name });
+    let id = r.ok ? r.data.id : null;
+    if (!r.ok && r.data.error === 'exists') {
+      const o = await api('/api/overview');
+      const f = o.ok && o.data.folders.find((x) => x.name.toLowerCase() === name.toLowerCase());
+      id = f ? f.id : null;
+    }
+    if (!id) { notify(errText(r.data.error)); return revert(); }
+    if (![...sel.options].some((o) => o.value === String(id))) {
+      const opt = document.createElement('option');
+      opt.value = String(id); opt.textContent = `📁 ${name}`;
+      sel.insertBefore(opt, sel.querySelector('option[value="__new__"]'));
+    }
+    sel.value = String(id);
+    dirty();
+  };
   $('save').onclick = async () => {
     $('save').disabled = true;
     const r = await api('/api/notes/update', { id, text: $('ntext').value, folder_id: Number($('nfolder').value) });
     if (r.ok) { toast('Сохранено'); haptic(); screenNote(id); } else { notify(errText(r.data.error)); dirty(); }
   };
   $('delNote').onclick = async () => {
-    if (!(await confirmBox('Удалить заметку?'))) return;
+    if (!(await confirmBox('Удалить заметку? Она уйдёт в корзину на 7 дней.'))) return;
     const r = await api('/api/notes/delete', { id });
     if (r.ok) back(); else notify(errText(r.data.error));
   };
@@ -415,7 +439,7 @@ async function screenShopping() {
       const r = await api('/api/shopping/lists/rename', { id: l.id, name });
       if (r.ok) { data = r.data; draw(); } else notify(errText(r.data.error));
     } else if (e.target.id === 'delList') {
-      if (!(await confirmBox(`Удалить список «${l.name}»? Покупки перейдут в «Без магазина».`))) return;
+      if (!(await confirmBox(`Удалить список «${l.name}»? Он вместе с пунктами уйдёт в корзину на 7 дней.`))) return;
       const r = await api('/api/shopping/lists/delete', { id: l.id });
       if (r.ok) { shopKey = 'all'; data = r.data; draw(); } else notify(errText(r.data.error));
     }
@@ -529,6 +553,7 @@ function screenSettings() {
       ${me.tz !== browserTz ? '<button id="tzfix" class="ghost">Взять с устройства</button>' : ''}
       <h3>Инструменты</h3>
       <button class="ghost wide" id="pwBtn">🔑 Генератор паролей</button>
+      <button class="ghost wide" id="trashBtn">🗑 Корзина</button>
       <h3>Бот</h3>
       <p id="botstate">${me.can_write ? '✅ Бот подключён и может писать вам.' : 'Разрешите боту писать вам, чтобы он присылал напоминания и принимал заметки.'}</p>
       ${me.can_write ? '' : '<button id="connect">Подключить бота</button>'}
@@ -537,6 +562,7 @@ function screenSettings() {
 
   bindBack();
   $('pwBtn').onclick = () => show(screenPasswords);
+  $('trashBtn').onclick = () => show(screenTrash);
   $('themes').onclick = async (e) => {
     const v = e.target.dataset && e.target.dataset.v;
     if (!v) return;
@@ -575,6 +601,105 @@ function holdToOpen(el, onTap, onHold) {
   el.addEventListener('click', () => { if (!held) onTap(); held = false; });
   // Запрет системного меню долгого нажатия и выделения (iOS/Android)
   ['contextmenu', 'selectstart', 'dragstart'].forEach((ev) => el.addEventListener(ev, (e) => e.preventDefault()));
+}
+
+// ---------- корзина ----------
+const daysLeft = (iso) => {
+  const d = Math.ceil((new Date(iso) - Date.now()) / 86400e3);
+  return d <= 0 ? 'удалится сегодня' : `ещё ${d} дн.`;
+};
+const keepText = (iso) => {
+  const d = Math.ceil((new Date(iso) - Date.now()) / 86400e3);
+  return d <= 0 ? 'Удалится сегодня.' : `Хранится ещё ${d} дн.`;
+};
+const plural = (n, a, b, c) => { const m10 = n % 10, m100 = n % 100; return m10 === 1 && m100 !== 11 ? a : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? b : c; };
+
+async function trashRestore(type, id) {
+  const r = await api('/api/trash/restore', { type, id });
+  if (!r.ok) { notify('Это уже нельзя вернуть.'); return false; }
+  haptic();
+  if (type === 'folder') toast(r.data.merged ? `Добавил ${r.data.count} в папку «${r.data.name}»` : `Вернул папку «${r.data.name}»`);
+  else if (type === 'list') toast(r.data.merged ? `Добавил ${r.data.count} в список «${r.data.name}»` : `Вернул список «${r.data.name}»`);
+  else if (type === 'note') toast(`Вернул в «${r.data.folder}»`);
+  else toast('Вернул');
+  return true;
+}
+async function trashPurge(type, id, what) {
+  if (!(await confirmBox(`Удалить ${what} навсегда? Вернуть будет нельзя.`))) return false;
+  const r = await api('/api/trash/purge', { type, id });
+  if (!r.ok) { notify('Не получилось.'); return false; }
+  return true;
+}
+
+async function screenTrash() {
+  h(`${subHeader('Корзина')}<p class="muted">Загрузка…</p>`);
+  bindBack();
+  const r = await api('/api/trash');
+  if (!r.ok) { h(`${subHeader('Корзина')}<div class="card"><p>Не удалось загрузить.</p></div>`); return bindBack(); }
+  const t = r.data;
+  const total = t.folders.length + t.notes.length + t.lists.length + t.items.length;
+  const acts = (type, id) => `<div class="acts"><button class="mini" data-restore="${type}:${id}">Вернуть</button><button class="mini danger" data-purge="${type}:${id}">Навсегда</button></div>`;
+  const row = (type, id, title, meta, openAttr = '') => `<div class="trow"><div class="tinfo" ${openAttr}><div class="ttitle">${title}</div><div class="meta">${meta}</div></div>${acts(type, id)}</div>`;
+  const sec = (name, rows) => (rows.length ? `<div class="sep">${name}</div>${rows.join('')}` : '');
+  h(`${subHeader('Корзина')}
+    <section class="card"><p class="muted small">Удалённое хранится ${t.days} дней, потом стирается окончательно.</p>
+      ${total ? '' : '<p>Корзина пуста.</p>'}
+      ${sec('Папки', t.folders.map((f) => row('folder', f.id, `📁 ${esc(f.name)}`, `${f.n} ${plural(f.n, 'заметка', 'заметки', 'заметок')} · ${daysLeft(f.expires_at)}`, `data-open-folder="${f.id}"`)))}
+      ${sec('Заметки', t.notes.map((n) => row('note', n.id, esc(n.text.length > 90 ? n.text.slice(0, 90) + '…' : n.text), `${esc(n.folder ?? '')} · ${daysLeft(n.expires_at)}`, `data-open-note="${n.id}"`)))}
+      ${sec('Списки покупок', t.lists.map((l) => row('list', l.id, `🛒 ${esc(l.name)}`, `${l.n} ${plural(l.n, 'пункт', 'пункта', 'пунктов')} · ${daysLeft(l.expires_at)}`)))}
+      ${sec('Пункты покупок', t.items.map((i) => row('item', i.id, esc(i.name), `${esc(i.list ?? 'Без магазина')} · ${daysLeft(i.expires_at)}`)))}
+      ${total ? '<button class="ghost danger wide" id="emptyTrash">Очистить корзину</button>' : ''}
+    </section>`);
+  bindBack();
+  const names = { folder: 'папку', note: 'заметку', list: 'список', item: 'пункт' };
+  app.onclick = async (e) => {
+    const open = e.target.closest('[data-open-folder],[data-open-note]');
+    if (open && !e.target.closest('button')) {
+      if (open.dataset.openFolder) return show(() => screenTrashFolder(Number(open.dataset.openFolder)));
+      return show(() => screenTrashNote(Number(open.dataset.openNote)));
+    }
+    const rb = e.target.closest('[data-restore]'), pb = e.target.closest('[data-purge]');
+    if (rb) { const [type, id] = rb.dataset.restore.split(':'); if (await trashRestore(type, Number(id))) screenTrash(); }
+    else if (pb) { const [type, id] = pb.dataset.purge.split(':'); if (await trashPurge(type, Number(id), names[type])) screenTrash(); }
+    else if (e.target.id === 'emptyTrash') {
+      if (!(await confirmBox('Очистить корзину? Всё в ней удалится навсегда.'))) return;
+      await api('/api/trash/empty', {}); screenTrash();
+    }
+  };
+}
+
+// Удалённая папка: можно войти, посмотреть заметки, вернуть всю папку или одну заметку (она вернётся в «Разное»)
+async function screenTrashFolder(id) {
+  h(`${subHeader('Папка в корзине')}<p class="muted">Загрузка…</p>`);
+  bindBack();
+  const r = await api('/api/trash/folder?id=' + id);
+  if (!r.ok) { h(`${subHeader('Папка в корзине')}<div class="card"><p>Папки уже нет в корзине.</p></div>`); return bindBack(); }
+  const { folder, notes } = r.data;
+  h(`${subHeader('Папка в корзине')}
+    <section class="card"><h2>📁 ${esc(folder.name)}</h2>
+      <p class="muted small">${notes.length} ${plural(notes.length, 'заметка', 'заметки', 'заметок')}. ${keepText(folder.expires_at)} Папку можно вернуть целиком или открыть заметку и вернуть только её (она попадёт в «Разное»).</p>
+      <div class="btnrow"><button class="mini" id="restoreFolder">Вернуть папку</button><button class="ghost mini danger" id="purgeFolder">Удалить навсегда</button></div></section>
+    <div id="tlist">${notes.map((n) => `<div class="note" data-tnote="${n.id}"><div class="note-text">${linkify(esc(n.text))}</div></div>`).join('') || '<p class="muted">В папке нет заметок.</p>'}</div>`);
+  bindBack();
+  $('restoreFolder').onclick = async () => { if (await trashRestore('folder', id)) { back(); } };
+  $('purgeFolder').onclick = async () => { if (await trashPurge('folder', id, 'папку со всем содержимым')) back(); };
+  $('tlist').onclick = (e) => { const c = e.target.closest('[data-tnote]'); if (c) show(() => screenTrashNote(Number(c.dataset.tnote))); };
+}
+
+// Заметка из корзины: просмотр как у обычной, но без правки; кнопки «Вернуть» и «Удалить навсегда»
+async function screenTrashNote(id) {
+  h(`${subHeader('Заметка в корзине')}<p class="muted">Загрузка…</p>`);
+  bindBack();
+  const r = await api('/api/trash/note?id=' + id);
+  if (!r.ok) { h(`${subHeader('Заметка в корзине')}<div class="card"><p>Заметки уже нет в корзине.</p></div>`); return bindBack(); }
+  const n = r.data.note;
+  h(`${subHeader('Заметка в корзине')}
+    <section class="card"><div class="tview">${linkify(esc(n.text))}</div>
+      <p class="muted small">${n.deleted_with_folder ? 'Из удалённой папки: вернётся в «Разное».' : `Была в папке «${esc(n.folder ?? 'Разное')}».`} ${keepText(n.expires_at)}</p>
+      <div class="btnrow"><button class="mini" id="restoreNote">Вернуть</button><button class="ghost mini danger" id="purgeNote">Удалить навсегда</button></div></section>`);
+  bindBack();
+  $('restoreNote').onclick = async () => { if (await trashRestore('note', id)) back(); };
+  $('purgeNote').onclick = async () => { if (await trashPurge('note', id, 'заметку')) back(); };
 }
 
 // ---------- генератор паролей ----------

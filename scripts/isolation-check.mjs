@@ -119,6 +119,23 @@ check('календарь второго человека пуст', Object.keys
 const aAfter = await call(A, `/api/note?id=${N}`);
 check('заметка админа осталась нетронутой', aAfter.data.note.text.includes('Альфа'));
 
+// --- 5б. корзина ---
+const TN = (await call(A, '/api/notes')).data.notes.find((n) => n.text.includes('Альфа'))?.id;
+await call(A, '/api/notes/delete', { id: TN });
+const tF = (await call(A, '/api/folders/create', { name: 'Корзинная папка' })).data?.id;
+await call(A, '/api/folders/delete', { id: tF });
+check('в корзине админа есть удалённая заметка и папка', (await call(A, '/api/trash')).data.notes.some((n) => n.id === TN) && (await call(A, '/api/trash')).data.folders.some((f) => f.id === tF));
+check('корзина второго человека не содержит чужого', !JSON.stringify((await call(Bd, '/api/trash')).data).includes('Альфа') && (await call(Bd, '/api/trash')).data.folders.length === 0);
+check('чужая удалённая заметка по номеру: 404', (await call(Bd, `/api/trash/note?id=${TN}`)).status === 404);
+check('чужая удалённая папка по номеру: 404', (await call(Bd, `/api/trash/folder?id=${tF}`)).status === 404);
+check('возврат чужой заметки из корзины: 404', (await call(Bd, '/api/trash/restore', { type: 'note', id: TN })).status === 404);
+check('возврат чужой папки из корзины: 404', (await call(Bd, '/api/trash/restore', { type: 'folder', id: tF })).status === 404);
+check('окончательное удаление чужого из корзины: 404', (await call(Bd, '/api/trash/purge', { type: 'note', id: TN })).status === 404);
+await call(Bd, '/api/trash/empty', {});
+check('«Очистить корзину» второго человека не трогает корзину админа', (await call(A, '/api/trash')).data.notes.some((n) => n.id === TN));
+await call(A, '/api/trash/restore', { type: 'note', id: TN });
+await call(A, '/api/trash/purge', { type: 'folder', id: tF });
+
 // --- 6. права администратора ---
 for (const p of ['/api/admin/overview']) check(`обычному человеку ${p}: 403`, (await call(Bd, p)).status === 403);
 for (const p of ['/api/admin/invite', '/api/admin/block', '/api/admin/unblock', '/api/admin/remove', '/api/admin/revoke'])

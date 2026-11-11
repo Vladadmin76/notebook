@@ -103,13 +103,19 @@ export const markCanWrite = (db, id) => db.prepare('UPDATE users SET can_write =
 
 export const listFolders = (db, userId) =>
   db.prepare(`SELECT f.id, f.name, f.kind, COUNT(n.id) AS n FROM folders f
-              LEFT JOIN notes n ON n.folder_id = f.id
-              WHERE f.user_id = ? GROUP BY f.id ORDER BY f.id`).bind(userId).all().then((r) => r.results);
+              LEFT JOIN notes n ON n.folder_id = f.id AND n.deleted_at IS NULL
+              WHERE f.user_id = ? AND f.deleted_at IS NULL GROUP BY f.id ORDER BY f.id`).bind(userId).all().then((r) => r.results);
 
-export const getFolderByName = (db, userId, name) =>
-  db.prepare('SELECT * FROM folders WHERE user_id = ? AND name = ? COLLATE NOCASE').bind(userId, name).first();
+// Названия сравниваем без учёта регистра в коде: collation NOCASE в SQLite понимает только латиницу, «Новая» и «НОВАЯ» он считает разными
+export const sameName = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+export const getFolderByName = async (db, userId, name) => {
+  const rows = await db.prepare('SELECT * FROM folders WHERE user_id = ? AND deleted_at IS NULL').bind(userId).all().then((r) => r.results);
+  return rows.find((f) => sameName(f.name, name)) ?? null;
+};
 
 export async function getOrCreateFolder(db, userId, name) {
+  const found = await getFolderByName(db, userId, name);
+  if (found) return found;
   await db.prepare('INSERT OR IGNORE INTO folders (user_id, name, kind, created_at) VALUES (?, ?, ?, ?)')
     .bind(userId, name, kindOf(name), nowIso()).run();
   return getFolderByName(db, userId, name);
@@ -126,21 +132,22 @@ export async function insertNote(db, { userId, folderId, text, rawText, source =
 // Все запросы по заметкам содержат user_id: чужие заметки недоступны
 export const getNote = (db, userId, id) =>
   db.prepare(`SELECT n.*, f.name AS folder FROM notes n LEFT JOIN folders f ON f.id = n.folder_id
-              WHERE n.id = ? AND n.user_id = ?`).bind(id, userId).first();
+              WHERE n.id = ? AND n.user_id = ? AND n.deleted_at IS NULL`).bind(id, userId).first();
 
 export const listNotes = (db, userId, limit = 10) =>
   db.prepare(`SELECT n.id, n.text, n.created_at, f.name AS folder FROM notes n
               LEFT JOIN folders f ON f.id = n.folder_id
-              WHERE n.user_id = ? ORDER BY n.id DESC LIMIT ?`).bind(userId, limit).all().then((r) => r.results);
+              WHERE n.user_id = ? AND n.deleted_at IS NULL ORDER BY n.id DESC LIMIT ?`).bind(userId, limit).all().then((r) => r.results);
 
 export const moveNote = (db, userId, noteId, folderId) =>
   db.prepare(`UPDATE notes SET folder_id = ?, updated_at = ?
-              WHERE id = ? AND user_id = ? AND EXISTS (SELECT 1 FROM folders WHERE id = ? AND user_id = ?)`)
+              WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM folders WHERE id = ? AND user_id = ? AND deleted_at IS NULL)`)
     .bind(folderId, nowIso(), noteId, userId, folderId, userId).run().then((r) => r.meta.changes === 1);
 
-// При удалении заметки база каскадом удаляет её напоминания, и счётчик изменённых строк бывает больше 1: считаем успехом любое ненулевое значение
+// Удаление заметки: уходит в корзину (напоминания остаются, но не срабатывают, пока заметка в корзине)
 export const deleteNote = (db, userId, noteId) =>
-  db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').bind(noteId, userId).run().then((r) => r.meta.changes >= 1);
+  db.prepare('UPDATE notes SET deleted_at = ?, deleted_with_folder = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
+    .bind(nowIso(), noteId, userId).run().then((r) => r.meta.changes >= 1);
 
 // ---------- напоминания ----------
 
@@ -154,7 +161,7 @@ export async function insertReminder(db, { userId, noteId, remindAt, rrule = nul
 export const dueReminders = (db, nowIso, limit) =>
   db.prepare(`SELECT r.*, COALESCE(r.text, n.text) AS msg, u.status AS ustatus
               FROM reminders r JOIN users u ON u.id = r.user_id LEFT JOIN notes n ON n.id = r.note_id
-              WHERE r.status = 'pending' AND r.remind_at <= ? ORDER BY r.remind_at LIMIT ?`)
+              WHERE r.status = 'pending' AND r.remind_at <= ? AND (n.id IS NULL OR n.deleted_at IS NULL) ORDER BY r.remind_at LIMIT ?`)
     .bind(nowIso, limit).all().then((r) => r.results);
 
 // «Захват» напоминания: сработает только один из параллельных вызовов (сравниваем старое время)
@@ -178,7 +185,7 @@ export const getReminder = (db, userId, id) =>
 export const listPendingReminders = (db, userId, limit = 20) =>
   db.prepare(`SELECT r.id, r.remind_at, r.rrule, r.local_time, r.tz, COALESCE(r.text, n.text) AS msg
               FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
-              WHERE r.user_id = ? AND r.status = 'pending' ORDER BY r.remind_at LIMIT ?`)
+              WHERE r.user_id = ? AND r.status = 'pending' AND (n.id IS NULL OR n.deleted_at IS NULL) ORDER BY r.remind_at LIMIT ?`)
     .bind(userId, limit).all().then((r) => r.results);
 
 export const cancelNoteReminders = (db, userId, noteId) =>
@@ -194,27 +201,33 @@ export const hasPendingReminder = (db, userId, noteId) =>
 
 export const listShoppingLists = async (db, userId) => {
   const lists = await db.prepare(`SELECT l.id, l.name, COALESCE(SUM(i.done = 0), 0) AS open, COALESCE(SUM(i.done = 1), 0) AS done
-                                  FROM shopping_lists l LEFT JOIN shopping_items i ON i.list_id = l.id
-                                  WHERE l.user_id = ? GROUP BY l.id ORDER BY l.name COLLATE NOCASE`).bind(userId).all().then((r) => r.results);
+                                  FROM shopping_lists l LEFT JOIN shopping_items i ON i.list_id = l.id AND i.deleted_at IS NULL
+                                  WHERE l.user_id = ? AND l.deleted_at IS NULL GROUP BY l.id ORDER BY l.name COLLATE NOCASE`).bind(userId).all().then((r) => r.results);
   const none = await db.prepare(`SELECT COALESCE(SUM(done = 0), 0) AS open, COALESCE(SUM(done = 1), 0) AS done
-                                 FROM shopping_items WHERE user_id = ? AND list_id IS NULL`).bind(userId).first();
+                                 FROM shopping_items WHERE user_id = ? AND list_id IS NULL AND deleted_at IS NULL`).bind(userId).first();
   return { lists, none };
 };
 
-export const findShoppingList = (db, userId, name) =>
-  db.prepare('SELECT * FROM shopping_lists WHERE user_id = ? AND name = ? COLLATE NOCASE').bind(userId, name).first();
+export const findShoppingList = async (db, userId, name) => {
+  const rows = await db.prepare('SELECT * FROM shopping_lists WHERE user_id = ? AND deleted_at IS NULL').bind(userId).all().then((r) => r.results);
+  return rows.find((l) => sameName(l.name, name)) ?? null;
+};
 
 export const getShoppingList = (db, userId, id) =>
-  db.prepare('SELECT * FROM shopping_lists WHERE id = ? AND user_id = ?').bind(id, userId).first();
+  db.prepare('SELECT * FROM shopping_lists WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(id, userId).first();
 
 export async function getOrCreateShoppingList(db, userId, name) {
+  const found = await findShoppingList(db, userId, name);
+  if (found) return found;
   await db.prepare('INSERT OR IGNORE INTO shopping_lists (user_id, name, created_at) VALUES (?, ?, ?)').bind(userId, name, nowIso()).run();
   return findShoppingList(db, userId, name);
 }
 
 export async function renameShoppingList(db, userId, id, name) {
+  const clash = await findShoppingList(db, userId, name);
+  if (clash && clash.id !== id) return 'exists';
   try {
-    const r = await db.prepare('UPDATE shopping_lists SET name = ? WHERE id = ? AND user_id = ?').bind(name, id, userId).run();
+    const r = await db.prepare('UPDATE shopping_lists SET name = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(name, id, userId).run();
     return r.meta.changes >= 1 ? 'ok' : 'missing';
   } catch (e) {
     if (/UNIQUE/i.test(String(e?.message ?? e))) return 'exists';
@@ -222,16 +235,18 @@ export async function renameShoppingList(db, userId, id, name) {
   }
 }
 
-// Удаление списка: пункты переходят в «Без магазина»
-export const deleteShoppingList = (db, userId, id) =>
-  db.batch([
-    db.prepare('UPDATE shopping_items SET list_id = NULL WHERE list_id = ? AND user_id = ?').bind(id, userId),
-    db.prepare('DELETE FROM shopping_lists WHERE id = ? AND user_id = ?').bind(id, userId),
+// Удаление списка: список вместе с пунктами уходит в корзину
+export const deleteShoppingList = (db, userId, id) => {
+  const now = nowIso();
+  return db.batch([
+    db.prepare('UPDATE shopping_items SET deleted_at = ?, deleted_with_list = ? WHERE list_id = ? AND user_id = ? AND deleted_at IS NULL').bind(now, id, id, userId),
+    db.prepare('UPDATE shopping_lists SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(now, id, userId),
   ]);
+};
 
 // Добавляет пункты { name, listId }. Повтор отсеивается только внутри одного списка: один товар можно держать в двух магазинах.
 export async function addShoppingItems(db, userId, items) {
-  const current = await db.prepare('SELECT name, list_id FROM shopping_items WHERE user_id = ? AND done = 0').bind(userId).all()
+  const current = await db.prepare('SELECT name, list_id FROM shopping_items WHERE user_id = ? AND done = 0 AND deleted_at IS NULL').bind(userId).all()
     .then((r) => new Set(r.results.map((x) => `${x.list_id ?? 'none'}|${x.name.toLowerCase()}`)));
   const added = [], existing = [];
   const now = nowIso();
@@ -252,7 +267,7 @@ export async function listShopping(db, userId, listKey = 'all') {
   const where = listKey === 'all' ? '' : listKey === 'none' ? 'AND i.list_id IS NULL' : 'AND i.list_id = ?';
   const stmt = db.prepare(`SELECT i.id, i.name, i.done, i.list_id, l.name AS list_name
                            FROM shopping_items i LEFT JOIN shopping_lists l ON l.id = i.list_id
-                           WHERE i.user_id = ? ${where}
+                           WHERE i.user_id = ? AND i.deleted_at IS NULL ${where}
                            ORDER BY (l.name IS NOT NULL), l.name COLLATE NOCASE, i.done, CASE WHEN i.done = 0 THEN i.id END, i.done_at DESC`);
   const bound = typeof listKey === 'number' ? stmt.bind(userId, listKey) : stmt.bind(userId);
   return bound.all().then((r) => r.results);
@@ -260,29 +275,31 @@ export async function listShopping(db, userId, listKey = 'all') {
 
 export const toggleShopping = (db, userId, id) =>
   db.prepare(`UPDATE shopping_items SET done = 1 - done, done_at = CASE WHEN done = 0 THEN ? ELSE NULL END
-              WHERE id = ? AND user_id = ?`).bind(nowIso(), id, userId).run().then((r) => r.meta.changes === 1);
+              WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).bind(nowIso(), id, userId).run().then((r) => r.meta.changes === 1);
 
 export const moveShoppingItem = (db, userId, id, listId) =>
-  db.prepare(`UPDATE shopping_items SET list_id = ? WHERE id = ? AND user_id = ?
-              AND (? IS NULL OR EXISTS (SELECT 1 FROM shopping_lists WHERE id = ? AND user_id = ?))`)
+  db.prepare(`UPDATE shopping_items SET list_id = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL
+              AND (? IS NULL OR EXISTS (SELECT 1 FROM shopping_lists WHERE id = ? AND user_id = ? AND deleted_at IS NULL))`)
     .bind(listId, id, userId, listId, listId, userId).run().then((r) => r.meta.changes === 1);
 
 export const clearDoneShopping = (db, userId, listKey = 'all') => {
   const where = listKey === 'all' ? '' : listKey === 'none' ? 'AND list_id IS NULL' : 'AND list_id = ?';
-  const stmt = db.prepare(`DELETE FROM shopping_items WHERE user_id = ? AND done = 1 ${where}`);
+  // «Очистить купленное»: купленное уходит в корзину
+  const stmt = db.prepare(`UPDATE shopping_items SET deleted_at = '${nowIso()}', deleted_with_list = NULL WHERE user_id = ? AND done = 1 AND deleted_at IS NULL ${where}`);
   return (typeof listKey === 'number' ? stmt.bind(userId, listKey) : stmt.bind(userId)).run().then((r) => r.meta.changes);
 };
 
 // ---------- приложение: папки, заметки, покупки ----------
 
 export const countShopping = (db, userId) =>
-  db.prepare('SELECT COALESCE(SUM(done = 0), 0) AS open, COALESCE(SUM(done = 1), 0) AS done FROM shopping_items WHERE user_id = ?')
+  db.prepare('SELECT COALESCE(SUM(done = 0), 0) AS open, COALESCE(SUM(done = 1), 0) AS done FROM shopping_items WHERE user_id = ? AND deleted_at IS NULL')
     .bind(userId).first();
 
 export const getFolder = (db, userId, id) =>
-  db.prepare('SELECT * FROM folders WHERE id = ? AND user_id = ?').bind(id, userId).first();
+  db.prepare('SELECT * FROM folders WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(id, userId).first();
 
 export async function createFolder(db, userId, name) {
+  if (await getFolderByName(db, userId, name)) return null; // уже есть (в любом регистре)
   try {
     const r = await db.prepare('INSERT INTO folders (user_id, name, kind, created_at) VALUES (?, ?, ?, ?)').bind(userId, name, kindOf(name), nowIso()).run();
     return r.meta.last_row_id;
@@ -293,8 +310,10 @@ export async function createFolder(db, userId, name) {
 }
 
 export async function renameFolder(db, userId, id, name) {
+  const clash = await getFolderByName(db, userId, name);
+  if (clash && clash.id !== id) return 'exists';
   try {
-    const r = await db.prepare('UPDATE folders SET name = ? WHERE id = ? AND user_id = ?').bind(name, id, userId).run();
+    const r = await db.prepare('UPDATE folders SET name = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(name, id, userId).run();
     return r.meta.changes === 1 ? 'ok' : 'missing';
   } catch (e) {
     if (/UNIQUE/i.test(String(e?.message ?? e))) return 'exists';
@@ -302,19 +321,20 @@ export async function renameFolder(db, userId, id, name) {
   }
 }
 
-// Удаление папки: заметки уходят в «Разное»
-export async function deleteFolder(db, userId, id, fallbackName) {
-  const fb = await getOrCreateFolder(db, userId, fallbackName);
+// Удаление папки: папка вместе с заметками уходит в корзину. Название освобождается (в name на время корзины служебное), настоящее лежит в orig_name.
+export async function deleteFolder(db, userId, id) {
+  const now = nowIso();
   await db.batch([
-    db.prepare('UPDATE notes SET folder_id = ? WHERE folder_id = ? AND user_id = ?').bind(fb.id, id, userId),
-    db.prepare('DELETE FROM folders WHERE id = ? AND user_id = ?').bind(id, userId),
+    db.prepare('UPDATE notes SET deleted_at = ?, deleted_with_folder = ? WHERE folder_id = ? AND user_id = ? AND deleted_at IS NULL').bind(now, id, id, userId),
+    db.prepare(`UPDATE folders SET orig_name = name, name = name || ' [в корзине ' || id || ']', deleted_at = ?
+                WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).bind(now, id, userId),
   ]);
 }
 
 // Заметки пользователя (новые сверху); поиск выполняет код, потому что SQLite не умеет регистронезависимый поиск по кириллице
 export async function notesForApp(db, userId, { folderId = null, q = '', limit = 1000 } = {}) {
   const base = `SELECT n.id, n.text, n.created_at, n.updated_at, n.done, n.done_at, n.folder_id, f.name AS folder, f.kind AS kind
-                FROM notes n LEFT JOIN folders f ON f.id = n.folder_id WHERE n.user_id = ?`;
+                FROM notes n LEFT JOIN folders f ON f.id = n.folder_id WHERE n.user_id = ? AND n.deleted_at IS NULL`;
   const rows = await (folderId
     ? db.prepare(`${base} AND n.folder_id = ? ORDER BY n.id DESC LIMIT ?`).bind(userId, folderId, limit)
     : db.prepare(`${base} ORDER BY n.id DESC LIMIT ?`).bind(userId, limit)).all().then((r) => r.results);
@@ -333,7 +353,7 @@ export const pendingRemindersForNotes = (db, userId, noteIds) => {
 export const pendingRemindersWithText = (db, userId) =>
   db.prepare(`SELECT r.id, r.note_id, r.remind_at, r.rrule, r.local_time, r.anchor_date, r.tz, COALESCE(r.text, n.text) AS msg
               FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
-              WHERE r.user_id = ? AND r.status = 'pending' ORDER BY r.remind_at LIMIT 500`).bind(userId).all().then((r) => r.results);
+              WHERE r.user_id = ? AND r.status = 'pending' AND (n.id IS NULL OR n.deleted_at IS NULL) ORDER BY r.remind_at LIMIT 500`).bind(userId).all().then((r) => r.results);
 
 export async function updateNote(db, userId, id, { text, folderId }) {
   const sets = [], vals = [];
@@ -341,14 +361,14 @@ export async function updateNote(db, userId, id, { text, folderId }) {
   if (folderId !== undefined) { sets.push('folder_id = ?'); vals.push(folderId); }
   if (!sets.length) return false;
   sets.push('updated_at = ?'); vals.push(nowIso());
-  const r = await db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).bind(...vals, id, userId).run();
+  const r = await db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).bind(...vals, id, userId).run();
   return r.meta.changes === 1;
 }
 
 export const addShoppingOne = (db, userId, name, listId = null) => addShoppingItems(db, userId, [{ name, listId }]);
 
 export const deleteShoppingItem = (db, userId, id) =>
-  db.prepare('DELETE FROM shopping_items WHERE id = ? AND user_id = ?').bind(id, userId).run().then((r) => r.meta.changes === 1);
+  db.prepare('UPDATE shopping_items SET deleted_at = ?, deleted_with_list = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(nowIso(), id, userId).run().then((r) => r.meta.changes === 1);
 
 // Заменяем напоминание заметки: старые активные отменяем, создаём новое
 export async function replaceNoteReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null }) {
@@ -364,7 +384,7 @@ export async function replaceNoteReminder(db, { userId, noteId, remindAt, rrule 
 
 export const toggleNoteDone = (db, userId, id) =>
   db.prepare(`UPDATE notes SET done = 1 - done, done_at = CASE WHEN done = 0 THEN ? ELSE NULL END, updated_at = ?
-              WHERE id = ? AND user_id = ?`).bind(nowIso(), nowIso(), id, userId).run().then((r) => r.meta.changes >= 1);
+              WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).bind(nowIso(), nowIso(), id, userId).run().then((r) => r.meta.changes >= 1);
 
 export const setState = (db, userId, kind, noteId, expiresAt) =>
   db.prepare(`INSERT INTO user_state (user_id, kind, note_id, expires_at) VALUES (?, ?, ?, ?)
@@ -380,17 +400,17 @@ export const getState = async (db, userId, nowIsoStr = nowIso()) => {
 export const clearState = (db, userId) => db.prepare('DELETE FROM user_state WHERE user_id = ?').bind(userId).run();
 
 export const appendToNote = (db, userId, id, extra, maxLen) =>
-  db.prepare(`UPDATE notes SET text = text || char(10) || ?, updated_at = ? WHERE id = ? AND user_id = ? AND length(text) + 1 + length(?) <= ?`)
+  db.prepare(`UPDATE notes SET text = text || char(10) || ?, updated_at = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND length(text) + 1 + length(?) <= ?`)
     .bind(extra, nowIso(), id, userId, extra, maxLen).run().then((r) => r.meta.changes >= 1);
 
 export const findNoteByText = (db, userId, folderId, text) =>
-  db.prepare('SELECT id FROM notes WHERE user_id = ? AND folder_id = ? AND text = ? LIMIT 1').bind(userId, folderId, text).first();
+  db.prepare('SELECT id FROM notes WHERE user_id = ? AND folder_id = ? AND text = ? AND deleted_at IS NULL LIMIT 1').bind(userId, folderId, text).first();
 
 // Люди, у которых во «Входящих» что-то лежит, и сколько
 export const inboxDigestCandidates = (db) =>
   db.prepare(`SELECT u.id, u.tz, u.inbox_digest_on, COUNT(n.id) AS c
-              FROM users u JOIN folders f ON f.user_id = u.id AND f.kind = 'inbox'
-              JOIN notes n ON n.folder_id = f.id
+              FROM users u JOIN folders f ON f.user_id = u.id AND f.kind = 'inbox' AND f.deleted_at IS NULL
+              JOIN notes n ON n.folder_id = f.id AND n.deleted_at IS NULL
               WHERE u.status = 'active' GROUP BY u.id`).all().then((r) => r.results);
 
 export const claimDigest = (db, userId, today) =>
@@ -404,4 +424,6 @@ export async function purgeOld(db, nowIsoStr) {
     db.prepare(`DELETE FROM reminders WHERE status IN ('sent', 'cancelled') AND COALESCE(sent_at, remind_at) < ?`).bind(cutoff),
     db.prepare('DELETE FROM user_state WHERE expires_at < ?').bind(nowIsoStr),
   ]);
+  const { purgeExpired } = await import('./trash.js'); // корзина: окончательно стираем просроченное
+  await purgeExpired(db, nowIsoStr);
 }
