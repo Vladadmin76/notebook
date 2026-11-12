@@ -90,9 +90,11 @@ const hist = [];
 function syncBack() {
   if (tg && tg.BackButton) { if (hist.length) tg.BackButton.show(); else tg.BackButton.hide(); }
 }
-function show(fn) { if (current) hist.push(current); current = fn; app.onclick = null; fn(); window.scrollTo(0, 0); syncBack(); }
-function back() { const f = hist.pop(); if (f) { current = f; app.onclick = null; f(); window.scrollTo(0, 0); } syncBack(); }
-function tab(fn) { hist.length = 0; current = fn; app.onclick = null; fn(); window.scrollTo(0, 0); syncBack(); }
+let mapFlush = null; // сохранение карты при уходе с её экрана
+const leaveMap = () => { if (mapFlush) { const f = mapFlush; mapFlush = null; f(); } };
+function show(fn) { leaveMap(); if (current) hist.push(current); current = fn; app.onclick = null; fn(); window.scrollTo(0, 0); syncBack(); }
+function back() { leaveMap(); const f = hist.pop(); if (f) { current = f; app.onclick = null; f(); window.scrollTo(0, 0); } syncBack(); }
+function tab(fn) { leaveMap(); hist.length = 0; current = fn; app.onclick = null; fn(); window.scrollTo(0, 0); syncBack(); }
 if (tg && tg.BackButton) tg.BackButton.onClick(back);
 
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -100,11 +102,11 @@ const MONTHS_NOM = ['Январь', 'Февраль', 'Март', 'Апрель'
 const WD = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const fmtDate = (iso) => new Date(iso).toLocaleString('ru-RU', { timeZone: me.tz, day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 // Своё окно ввода и уведомление: системные prompt()/alert() во встроенном браузере Telegram работают нестабильно
-function askText(title, value = '') {
+function askText(title, value = '', max = 30) {
   return new Promise((resolve) => {
     const m = document.createElement('div');
     m.className = 'modal';
-    m.innerHTML = `<div class="sheet"><h3>${esc(title)}</h3><input id="askIn" maxlength="30" value="${esc(value)}" autocomplete="off">
+    m.innerHTML = `<div class="sheet"><h3>${esc(title)}</h3><input id="askIn" maxlength="${max}" value="${esc(value)}" autocomplete="off">
       <div class="btnrow"><button class="ghost mini" id="askNo">Отмена</button><button class="mini" id="askYes">Готово</button></div></div>`;
     document.body.appendChild(m);
     const input = m.querySelector('#askIn');
@@ -136,7 +138,7 @@ async function refreshTrashIcon() {
 }
 const TRASH_ACTIONS = /^\/api\/(notes\/delete|folders\/delete|shopping\/(delete|clear|lists\/delete)|trash\/(restore|purge|empty))$/;
 
-const TABS = [['notes', '📁', 'Заметки'], ['shop', '🛒', 'Покупки'], ['cal', '📅', 'Календарь']];
+const TABS = [['notes', '📁', 'Заметки'], ['shop', '🛒', 'Покупки'], ['cal', '📅', 'Календарь'], ['maps', '🧠', 'Карты']];
 function frame(active, inner) {
   h(`<header class="topbar"><span class="brand">Блокнот</span>
       <div class="topbtns"><button id="trashBtn" class="gear trashbtn" aria-label="Корзина">${binIcon()}</button>
@@ -150,12 +152,108 @@ function frame(active, inner) {
   document.querySelector('.tabbar').onclick = (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    const fn = { notes: screenNotes, shop: screenShopping, cal: screenCalendar }[b.dataset.tab];
+    const fn = { notes: screenNotes, shop: screenShopping, cal: screenCalendar, maps: screenMaps }[b.dataset.tab];
     if (fn) tab(fn);
   };
 }
 const subHeader = (title, extra = '') => `<header class="topbar sub"><button class="ghost back" id="backBtn">← Назад</button><span class="brand">${esc(title)}</span>${extra || '<span></span>'}</header>`;
 const bindBack = () => { const b = $('backBtn'); if (b) b.onclick = back; };
+
+// ---------- вкладка «Карты»: интеллект-карты, отдельное приложение внутри приложения ----------
+async function screenMaps() {
+  frame('maps', '<div id="maplist"><p class="muted">Загрузка…</p></div>');
+  const r = await api('/api/maps');
+  if (!r.ok) return;
+  $('maplist').innerHTML = r.data.maps.map((m) => `<button class="row-card" data-map="${m.id}"><span>🧠 ${esc(m.title || 'Без названия')}</span>
+      <span class="count">${esc(new Date(m.updated_at).toLocaleDateString('ru-RU', { timeZone: me.tz, day: 'numeric', month: 'short' }))}</span></button>`).join('')
+    + `<button class="ghost wide" id="newMap">+ Новая карта</button>`
+    + (r.data.maps.length ? '' : '<p class="muted">Здесь будут ваши карты: центральная мысль и ветки от неё.</p>');
+  $('maplist').onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.map) show(() => screenMapEditor(Number(b.dataset.map)));
+    else if (b.id === 'newMap') show(() => screenMapEditor(null));
+  };
+}
+
+async function screenMapEditor(mapId) {
+  h(`${subHeader('Карта', '<span class="muted" id="mapState"></span>')}<div id="mapbox"></div><div class="mapbar" id="mapbar" hidden></div>`);
+  bindBack();
+  let data = null;
+  if (mapId) {
+    const r = await api('/api/maps/get?id=' + mapId);
+    if (!r.ok) { notify('Не удалось открыть карту.'); return back(); }
+    data = r.data.data;
+  }
+  const box = $('mapbox'), bar = $('mapbar'), state = $('mapState');
+  let mind = null, timer = null, saving = Promise.resolve(), dirty = false;
+
+  const save = async () => {
+    clearTimeout(timer); timer = null;
+    if (!mind || !dirty) return;
+    dirty = false; state.textContent = '…';
+    const tree = mind.getData().nodeData;
+    saving = saving.then(async () => {
+      const r = mapId ? await api('/api/maps/save', { id: mapId, tree }) : await api('/api/maps/create', { tree });
+      if (r.ok && !mapId) mapId = r.data.id;
+      state.textContent = r.ok ? '✓' : '⚠️'; if (!r.ok) dirty = true;
+    });
+    await saving;
+  };
+  const changed = () => { dirty = true; state.textContent = ''; clearTimeout(timer); timer = setTimeout(save, 600); };
+  mapFlush = save;
+
+  const sel = () => mind.currentNode || mind.nodes.querySelector('me-root me-tpc') || null;
+  const isRoot = (el) => !!el && el.nodeObj && !el.nodeObj.parent;
+  const start = (tree) => {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    box.innerHTML = '';
+    mind = new MindElixir({ el: box, direction: MindElixir.SIDE, toolBar: false, keypress: false, contextMenu: false, allowUndo: false, theme: dark ? MindElixir.DARK_THEME : MindElixir.THEME });
+    mind.init(tree);
+    mind.bus.addListener('operation', changed);
+    bar.hidden = false;
+    setTimeout(() => { try { mind.toCenter(); } catch {} }, 50);
+  };
+  const newNode = (topic) => { const o = mind.generateNewObj(); o.topic = topic; return o; };
+
+  if (data) start(data);
+  else {
+    box.innerHTML = '<button id="mapPlus" class="mapplus" aria-label="Добавить мысль">+</button>';
+    $('mapPlus').onclick = async () => {
+      const t = await askText('Центральная мысль', '', 200);
+      if (!t) return;
+      const tree = MindElixir.new(t); start(tree); dirty = true; save();
+    };
+  }
+
+  bar.onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b || !mind) return;
+    const el = sel();
+    if (!el) return;
+    if (b.id === 'mapChild') {
+      const t = await askText('Новая ветка', '', 200);
+      if (t) { await mind.addChild(el, newNode(t)); changed(); }
+    } else if (b.id === 'mapSibling') {
+      if (isRoot(el)) return toast('У центра нет «соседей»: добавьте ветку');
+      const t = await askText('Ветка рядом', '', 200);
+      if (t) { await mind.insertSibling('after', el, newNode(t)); changed(); }
+    } else if (b.id === 'mapEdit') {
+      const t = await askText('Текст ветки', el.nodeObj.topic || '', 200);
+      if (t) { await mind.setNodeTopic(el, t); changed(); }
+    } else if (b.id === 'mapDel') {
+      if (isRoot(el)) {
+        if (!confirm('Удалить всю карту целиком? Вернуть её будет нельзя.')) return;
+        dirty = false; clearTimeout(timer); mapFlush = null; await saving;
+        if (mapId) await api('/api/maps/delete', { id: mapId });
+        return back();
+      }
+      if (!confirm('Удалить эту ветку со всем, что от неё растёт?')) return;
+      await mind.removeNodes([el]); changed();
+    } else if (b.id === 'mapFit') { try { mind.scaleFit(); mind.toCenter(); } catch {} }
+  };
+  bar.innerHTML = '<button id="mapChild">＋ Ветка</button><button id="mapSibling">＋ Рядом</button><button id="mapEdit" aria-label="Изменить">✎</button><button id="mapFit" aria-label="Вписать">⤢</button><button id="mapDel" class="danger" aria-label="Удалить">🗑</button>';
+}
 
 // ---------- вкладка «Заметки»: папки и поиск ----------
 async function screenNotes() {

@@ -7,6 +7,7 @@ import { LIMITS } from './config.js';
 import { utc, isoUtc, planReminder, nextRecurrence, parseRrule, describeRepeat, formatWhen } from './timeutil.js';
 import { buildIcs, googleCalendarUrl, signIcs } from './ics.js';
 import * as trash from './trash.js';
+import * as maps from './maps.js';
 import { CATALOG, resolveStore, buildEntries, MAX_ALIASES } from './stores.js';
 
 const FALLBACK_FOLDER = 'Разное';
@@ -107,6 +108,26 @@ export async function handleAppApi({ request, env, url, user, body }) {
   }
   if (path === '/api/notes/delete' && post) {
     return (await db.deleteNote(D, user.id, intOr(body.id))) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
+  }
+
+  // ---------- интеллект-карты ----------
+  if (path === '/api/maps' && get) return json({ maps: await maps.listMaps(D, user.id) });
+  if (path === '/api/maps/get' && get) {
+    const m = await maps.getMap(D, user.id, intOr(url.searchParams.get('id')));
+    return m ? json({ id: m.id, data: JSON.parse(m.data) }) : json({ error: 'not_found' }, 404);
+  }
+  if (path === '/api/maps/create' && post) {
+    const tree = maps.cleanTree(body.tree);
+    if (!tree) return json({ error: 'bad_map' }, 400);
+    return json({ id: await maps.createMap(D, user.id, tree, nowIso) });
+  }
+  if (path === '/api/maps/save' && post) {
+    const tree = maps.cleanTree(body.tree);
+    if (!tree) return json({ error: 'bad_map' }, 400);
+    return (await maps.saveMap(D, user.id, intOr(body.id), tree, nowIso)) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
+  }
+  if (path === '/api/maps/delete' && post) {
+    return (await maps.deleteMap(D, user.id, intOr(body.id))) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
   }
 
   // ---------- напоминания ----------
