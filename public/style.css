@@ -158,3 +158,12 @@ button.star.on { color: #e0a800; }
 .srow .x { width: 32px; margin: 0; padding: 4px; background: transparent; color: var(--muted); }
 
 .sheet.scroll { max-height: 80vh; overflow-y: auto; }
+
+/* ---------- Карты ---------- */
+#mapbox { position: fixed !important; width: auto !important; height: auto !important; left: 0; right: 0; top: calc(66px + var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)); bottom: calc(64px + env(safe-area-inset-bottom, 0px)); background: var(--bg); overflow: hidden; touch-action: none; }
+.mapplus { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); width: 84px; height: 84px; margin: 0; border-radius: 50%; font-size: 3rem; line-height: 1; padding: 0; }
+.mapbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; gap: 6px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); background: var(--card); border-top: 1px solid var(--line); }
+.mapbar button { flex: 1; margin: 0; padding: 10px 4px; font-size: .95rem; }
+.mapbar[hidden] { display: none; }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 12px; }
+.sw { width: 44px; height: 44px; margin: 0; padding: 0; border-radius: 50%; border: 2px solid var(--line); }

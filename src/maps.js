@@ -2,6 +2,7 @@
 const MAX_NODES = 600;
 const MAX_TOPIC = 200;
 const MAX_DEPTH = 40;
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
 // Возвращает чистое дерево или null, если данные негодные
 export function cleanTree(raw) {
@@ -12,6 +13,10 @@ export function cleanTree(raw) {
     if (!id) return null;
     const out = { id, topic: String(n.topic ?? '').slice(0, MAX_TOPIC) };
     if (n.expanded === false) out.expanded = false;
+    const bg = n.style && COLOR_RE.test(n.style.background) ? n.style.background : null;
+    const fg = n.style && COLOR_RE.test(n.style.color) ? n.style.color : null;
+    if (bg || fg) out.style = { ...(bg ? { background: bg } : {}), ...(fg ? { color: fg } : {}) };
+    if (COLOR_RE.test(n.branchColor)) out.branchColor = n.branchColor; // цвет линии, которая ведёт к этой ветке
     if (depth === 1 && n.direction !== undefined) out.direction = n.direction === 0 ? 0 : 1; // сторона ветки от центра
     if (Array.isArray(n.children) && n.children.length) {
       out.children = [];

@@ -178,11 +178,29 @@ check('заголовок Content-Security-Policy задан', (page.headers.get
 check('заголовок X-Content-Type-Options: nosniff', page.headers.get('x-content-type-options') === 'nosniff');
 check('слишком большой запрос: 413', (await call(A, '/api/notes/update', {}, { raw: 'x'.repeat(200_000) })).status === 413);
 
+// --- интеллект-карты ---
+const mk = await call(A, '/api/maps/create', { tree: { id: 'r1', topic: 'Секретная карта', children: [{ id: 'c1', topic: 'Ветка', style: { background: '#e5484d', color: '#ffffff' } }] } });
+check('админ создаёт карту', mk.status === 200 && mk.data.id, JSON.stringify(mk.data));
+const MID = mk.data.id;
+check('второй человек не видит карту админа в списке', !JSON.stringify((await call(Bd, '/api/maps')).data).includes('Секретная'));
+check('чужая карта по номеру: 404', (await call(Bd, `/api/maps/get?id=${MID}`)).status === 404);
+check('правка чужой карты: 404', (await call(Bd, '/api/maps/save', { id: MID, tree: { id: 'x', topic: 'взлом' } })).status === 404);
+check('удаление чужой карты: 404', (await call(Bd, '/api/maps/delete', { id: MID })).status === 404);
+check('карта админа осталась нетронутой', (await call(A, `/api/maps/get?id=${MID}`)).data.data?.nodeData?.topic === 'Секретная карта');
+check('цвета веток сохраняются', (await call(A, `/api/maps/get?id=${MID}`)).data.data?.nodeData?.children?.[0]?.style?.background === '#e5484d');
+check('мусорный цвет и лишние поля отбрасываются', await (async () => {
+  await call(A, '/api/maps/save', { id: MID, tree: { id: 'r1', topic: 'T', evil: '<img>', children: [{ id: 'c1', topic: 'x', style: { background: 'url(javascript:1)', color: 'red' }, branchColor: '"><script>' }] } });
+  const t = (await call(A, `/api/maps/get?id=${MID}`)).data.data.nodeData;
+  return !t.evil && !t.children[0].style && !t.children[0].branchColor;
+})());
+check('карта без правильных id отклоняется: 400', (await call(A, '/api/maps/save', { id: MID, tree: { id: '<b>', topic: 'x' } })).status === 400);
+
 // --- уборка: удаляем тестового человека ---
 await call(A, '/api/admin/remove', { id: B });
 await call(A, '/api/notes/delete', { id: N });
 await call(A, '/api/shopping/delete', { id: itemId });
 await call(A, '/api/shopping/lists/delete', { id: L });
+await call(A, '/api/maps/delete', { id: MID });
 console.log(fails ? `\nНЕ ПРОЙДЕНО проверок: ${fails}` : '\nВсе проверки пройдены');
 mock.close();
 process.exit(fails ? 1 : 0);

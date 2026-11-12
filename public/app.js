@@ -176,6 +176,36 @@ async function screenMaps() {
   };
 }
 
+const ME = window.MindElixir && (MindElixir.default || MindElixir); // класс карты (библиотека отдаёт его как default)
+const MAP_COLORS = ['#e5484d', '#f08a24', '#f5c518', '#30a46c', '#12a594', '#3e63dd', '#8e4ec6', '#e93d82', '#8b8d98', '#ffffff', '#1b1f24'];
+// Цвет текста подбирается под фон: на светлом чёрный, на тёмном белый
+const textOn = (hex) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? '#1b1f24' : '#ffffff';
+};
+// Линия от окошка к следующим имеет цвет самого окошка; у бесцветного окошка линии обычные
+function normalizeBranches(node) {
+  let changed = false;
+  for (const c of node.children || []) {
+    const want = node.style && node.style.background;
+    if (want ? c.branchColor !== want : c.branchColor !== undefined) { changed = true; if (want) c.branchColor = want; else delete c.branchColor; }
+    if (normalizeBranches(c)) changed = true;
+  }
+  return changed;
+}
+const findNode = (node, id) => { if (node.id === id) return node; for (const c of node.children || []) { const f = findNode(c, id); if (f) return f; } return null; };
+const pickColor = () => new Promise((resolve) => {
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.innerHTML = `<div class="sheet"><h3>Цвет окошка</h3><div class="swatches">${MAP_COLORS.map((c) => `<button class="sw" data-c="${c}" style="background:${c}" aria-label="${c}"></button>`).join('')}</div>
+    <div class="btnrow"><button class="ghost mini" id="swNo">Отмена</button><button class="ghost mini" id="swReset">Без цвета</button></div></div>`;
+  document.body.appendChild(m);
+  const done = (v) => { m.remove(); resolve(v); };
+  m.onclick = (e) => { const b = e.target.closest('button'); if (b && b.dataset.c) done(b.dataset.c); };
+  m.querySelector('#swNo').onclick = () => done(null);
+  m.querySelector('#swReset').onclick = () => done('');
+});
+
 async function screenMapEditor(mapId) {
   h(`${subHeader('Карта', '<span class="muted" id="mapState"></span>')}<div id="mapbox"></div><div class="mapbar" id="mapbar" hidden></div>`);
   bindBack();
@@ -208,13 +238,21 @@ async function screenMapEditor(mapId) {
   const start = (tree) => {
     const dark = document.documentElement.dataset.theme === 'dark';
     box.innerHTML = '';
-    mind = new MindElixir({ el: box, direction: MindElixir.SIDE, toolBar: false, keypress: false, contextMenu: false, allowUndo: false, theme: dark ? MindElixir.DARK_THEME : MindElixir.THEME });
+    mind = new ME({ el: box, direction: ME.SIDE, toolBar: false, keypress: false, contextMenu: false, allowUndo: false, theme: dark ? ME.DARK_THEME : ME.THEME });
     mind.init(tree);
-    mind.bus.addListener('operation', changed);
+    mind.bus.addListener('operation', (op) => {
+      if (op && op.name === 'moveNode') { const d = mind.getData(); if (normalizeBranches(d.nodeData)) { mind.refresh(d); } }
+      changed();
+    });
     bar.hidden = false;
-    setTimeout(() => { try { mind.toCenter(); } catch {} }, 50);
+    [60, 350, 800].forEach((ms) => setTimeout(() => { try { mind.toCenter(); } catch {} }, ms));
   };
-  const newNode = (topic) => { const o = mind.generateNewObj(); o.topic = topic; return o; };
+  const newNode = (topic, parentObj) => {
+    const o = mind.generateNewObj(); o.topic = topic;
+    const bg = parentObj && parentObj.style && parentObj.style.background;
+    if (bg) o.branchColor = bg;
+    return o;
+  };
 
   if (data) start(data);
   else {
@@ -222,7 +260,7 @@ async function screenMapEditor(mapId) {
     $('mapPlus').onclick = async () => {
       const t = await askText('Центральная мысль', '', 200);
       if (!t) return;
-      const tree = MindElixir.new(t); start(tree); dirty = true; save();
+      const tree = ME.new(t); start(tree); dirty = true; save();
     };
   }
 
@@ -233,26 +271,37 @@ async function screenMapEditor(mapId) {
     if (!el) return;
     if (b.id === 'mapChild') {
       const t = await askText('Новая ветка', '', 200);
-      if (t) { await mind.addChild(el, newNode(t)); changed(); }
+      if (t) { await mind.addChild(el, newNode(t, el.nodeObj)); changed(); }
     } else if (b.id === 'mapSibling') {
       if (isRoot(el)) return toast('У центра нет «соседей»: добавьте ветку');
       const t = await askText('Ветка рядом', '', 200);
-      if (t) { await mind.insertSibling('after', el, newNode(t)); changed(); }
+      if (t) { await mind.insertSibling('after', el, newNode(t, el.nodeObj.parent)); changed(); }
     } else if (b.id === 'mapEdit') {
       const t = await askText('Текст ветки', el.nodeObj.topic || '', 200);
       if (t) { await mind.setNodeTopic(el, t); changed(); }
     } else if (b.id === 'mapDel') {
       if (isRoot(el)) {
-        if (!confirm('Удалить всю карту целиком? Вернуть её будет нельзя.')) return;
+        if (!(await confirmBox('Удалить всю карту целиком? Вернуть её будет нельзя.'))) return;
         dirty = false; clearTimeout(timer); mapFlush = null; await saving;
         if (mapId) await api('/api/maps/delete', { id: mapId });
         return back();
       }
-      if (!confirm('Удалить эту ветку со всем, что от неё растёт?')) return;
+      if (!(await confirmBox('Удалить эту ветку со всем, что от неё растёт?'))) return;
       await mind.removeNodes([el]); changed();
-    } else if (b.id === 'mapFit') { try { mind.scaleFit(); mind.toCenter(); } catch {} }
+    } else if (b.id === 'mapColor') {
+      const c = await pickColor();
+      if (c === null) return;
+      const d = mind.getData(), id = el.nodeObj.id, n = findNode(d.nodeData, id);
+      if (!n) return;
+      if (c) n.style = { ...(n.style || {}), background: c, color: textOn(c) };
+      else if (n.style) { delete n.style.background; delete n.style.color; if (!Object.keys(n.style).length) delete n.style; }
+      normalizeBranches(d.nodeData);
+      mind.refresh(d);
+      const again = ME.E(id); if (again) mind.selectNode(again);
+      changed();
+    } else if (b.id === 'mapFit') { try { mind.scale(1); mind.toCenter(); } catch {} }
   };
-  bar.innerHTML = '<button id="mapChild">＋ Ветка</button><button id="mapSibling">＋ Рядом</button><button id="mapEdit" aria-label="Изменить">✎</button><button id="mapFit" aria-label="Вписать">⤢</button><button id="mapDel" class="danger" aria-label="Удалить">🗑</button>';
+  bar.innerHTML = '<button id="mapChild">＋ Ветка</button><button id="mapSibling">＋ Рядом</button><button id="mapEdit" aria-label="Изменить">✎</button><button id="mapColor" aria-label="Цвет">🎨</button><button id="mapFit" aria-label="Вписать">⤢</button><button id="mapDel" class="danger" aria-label="Удалить">🗑</button>';
 }
 
 // ---------- вкладка «Заметки»: папки и поиск ----------
