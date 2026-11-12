@@ -20,7 +20,7 @@ test('известные русские написания и произноше
   assert.equal(ask('Волмарт'), 'Walmart');
   assert.equal(ask('Таргет'), 'Target');
   assert.equal(ask('Винка Фуд'), 'WinCo Foods');
-  assert.equal(ask('Хоум Депо'), 'Home Depot');
+  assert.equal(ask('Хоум Депо'), 'The Home Depot');
   assert.equal(ask('Эйч-И-Би'), 'H-E-B');
   assert.equal(ask('Трейдер Джо'), "Trader Joe's");
 });

@@ -674,8 +674,7 @@ async function screenStores() {
     }
     $('slist').innerHTML = groups.map(([g, items]) => `<div class="sep">${esc(g)}</div>${items.map((x) => `<div class="srow">
         <button class="star ${x.favorite ? 'on' : ''}" data-fav="${esc(x.name)}" aria-label="В избранное">${x.favorite ? '★' : '☆'}</button>
-        <div class="sname"><div>${esc(x.name)}${x.items ? ` <span class="tag">в списке: ${x.items}</span>` : ''}</div>
-          ${x.aliases.length ? `<div class="meta">${esc(x.aliases.slice(0, 4).join(', '))}</div>` : ''}</div>
+        <div class="sname"><div>${esc(x.name)}${x.items ? ` <span class="tag">в списке: ${x.items}</span>` : ''}</div></div>
         ${x.custom ? `<button class="x" data-del="${x.id}" aria-label="Убрать">✕</button>` : ''}</div>`).join('')}`).join('') || '<p class="muted">Ничего не найдено.</p>';
   };
   draw();

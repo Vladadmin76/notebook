@@ -68,9 +68,10 @@ async function reset(name) {
   await call('/api/trash/empty', {});
   const st = await store(name);
   if (st?.favorite) await call('/api/stores/favorite', { name, favorite: false });
+  sql(`UPDATE user_stores SET aliases='[]' WHERE name='${name}' AND custom=0`); // выученные написания прошлых прогонов
 }
 if ((await call('/api/me')).data?.state !== 'user') await call('/api/join', { name: 'Админ', tz: 'UTC' });
-for (const n of ['Harbor Freight', 'Home Depot', 'Kroger']) await reset(n);
+for (const n of ['Harbor Freight', 'The Home Depot', 'Kroger']) await reset(n);
 
 // --- избранное создаёт список; убрать можно только пустой ---
 await call('/api/stores/favorite', { name: 'Harbor Freight', favorite: true });
@@ -106,13 +107,13 @@ check('и у него есть список с покупкой', !!(await list(
 
 // --- строго к не избранным, снисходительно к избранным ---
 await say('в Хомдепот гвозди');
-check('опечатка в НЕ избранном магазине не превращается в Home Depot (строго)', !(await list('Home Depot')) && !!(await list('Хомдепот')), JSON.stringify((await lists()).map((l) => l.name)));
+check('опечатка в НЕ избранном магазине не превращается в Home Depot (строго)', !(await list('The Home Depot')) && !!(await list('Хомдепот')), JSON.stringify((await lists()).map((l) => l.name)));
 await call('/api/shopping/lists/delete', { id: (await list('Хомдепот')).id }).catch(() => {});
 const hd = await list('Хомдепот');
 if (hd) { for (const i of (await call(`/api/shopping?list=${hd.id}`)).data.items) await call('/api/shopping/delete', { id: i.id }); await call('/api/shopping/lists/delete', { id: hd.id }); }
-await call('/api/stores/favorite', { name: 'Home Depot', favorite: true });
+await call('/api/stores/favorite', { name: 'The Home Depot', favorite: true });
 await say('в Хомдепот шурупы');
-check('у избранного Home Depot та же опечатка узнаётся (снисходительно)', (await call(`/api/shopping?list=${(await list('Home Depot')).id}`)).data.items.some((i) => i.name === 'Шурупы') && !(await list('Хомдепот')));
+check('у избранного Home Depot та же опечатка узнаётся (снисходительно)', (await call(`/api/shopping?list=${(await list('The Home Depot')).id}`)).data.items.some((i) => i.name === 'Шурупы') && !(await list('Хомдепот')));
 
 // --- переименование и удаление ---
 const ren = await call('/api/shopping/lists/rename', { id: (await list('Harbor Freight')).id, name: 'Другое' });
@@ -127,7 +128,7 @@ check('старый список из перечня («Kroger») стал из�
 check('старый свой список стал своим избранным магазином', sync.find((s) => s.name === `Старый${TAG}`)?.custom === true);
 
 // --- уборка ---
-for (const n of ['Harbor Freight', 'Home Depot', 'Kroger', `Рынок${TAG}`, `Старый${TAG}`]) await reset(n).catch(() => {});
+for (const n of ['Harbor Freight', 'The Home Depot', 'Kroger', `Рынок${TAG}`, `Старый${TAG}`]) await reset(n).catch(() => {});
 for (const l of await lists()) if (l.name.includes(TAG)) { for (const i of (await call(`/api/shopping?list=${l.id}`)).data.items) await call('/api/shopping/delete', { id: i.id }); await call('/api/shopping/lists/delete', { id: l.id }); }
 await call('/api/trash/empty', {});
 console.log(fails ? `\nНЕ ПРОЙДЕНО проверок: ${fails}` : '\nВсе проверки пройдены');
