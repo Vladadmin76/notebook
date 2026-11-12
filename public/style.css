@@ -149,3 +149,10 @@ button.copied { background: var(--good); }
 /* значок корзины рядом с шестерёнкой */
 .topbtns { display: flex; gap: 8px; }
 button.trashbtn { padding: 0; } button.trashbtn svg { width: 30px; height: 30px; display: block; margin: 0 auto; }
+
+/* ---------- магазины ---------- */
+.srow { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.srow .sname { flex: 1; min-width: 0; } .srow .meta { margin-top: 2px; }
+button.star { width: 40px; flex: 0 0 40px; margin: 0; padding: 4px; background: transparent; color: var(--muted); font-size: 1.5rem; line-height: 1; }
+button.star.on { color: #e0a800; }
+.srow .x { width: 32px; margin: 0; padding: 4px; background: transparent; color: var(--muted); }

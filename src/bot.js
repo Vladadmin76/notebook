@@ -4,6 +4,7 @@ import { escapeHtml } from './util.js';
 import { processNote, onlyLinks } from './deepseek.js';
 import { LIMITS, INBOX_NAME, FOLDER_NAME_RE, TRASH_DAYS } from './config.js';
 import * as trash from './trash.js';
+import { resolveStore, buildEntries, MAX_ALIASES } from './stores.js';
 import { transcribe } from './groq.js';
 import { downloadFile, TG_DOWNLOAD_LIMIT } from './telegram.js';
 import { localNowInfo, planReminder, formatWhen, describeRepeat, snoozeHour, tomorrowNine } from './timeutil.js';
@@ -157,6 +158,27 @@ export function createBot(env) {
     return ctx.reply(notes.map(line).join('\n'));
   });
 
+  // ---------- магазины: перечень, избранное, выученные написания ----------
+  async function storeContext(userId) {
+    const [rows, listNames] = await Promise.all([db.listUserStores(D, userId), db.shoppingListNames(D, userId)]);
+    const entries = buildEntries(rows, listNames);
+    // Для подсказок: избранные и свои первыми, затем остальные известные
+    const fav = new Set(rows.filter((r) => r.favorite || r.custom).map((r) => r.name.toLowerCase()));
+    const names = [...entries.filter((e) => fav.has(e.name.toLowerCase())), ...entries.filter((e) => !fav.has(e.name.toLowerCase()))].map((e) => e.name);
+    return { rows, entries, names };
+  }
+  // Название магазина → каноническое (и запоминаем новое написание)
+  async function canonicalStore(userId, ctx, input) {
+    const m = resolveStore(input, ctx.entries);
+    if (!m) return { name: input, matched: false };
+    if (m.source !== 'list' && (m.how === 'sound' || m.how === 'fuzzy') && m.name.toLowerCase() !== String(input).trim().toLowerCase()) { // запоминаем только новые написания
+      if (await db.learnStoreAlias(D, userId, m.name, input, MAX_ALIASES)) {
+        const row = ctx.entries.find((e) => e.name === m.name); if (row) row.aliases.push(input.trim());
+      }
+    }
+    return { name: m.name, matched: true };
+  }
+
   // ---------- списки покупок по магазинам ----------
   // key: 'all' (все), 'none' («Без магазина») или номер списка
   const SHOP_LIMIT = 50; // столько пунктов показываем кнопками
@@ -195,7 +217,9 @@ export function createBot(env) {
     if (q && !/^(все|всё|all)$/i.test(q)) {
       if (/^без магазина$/i.test(q)) key = 'none';
       else {
-        const l = await db.findShoppingList(D, ctx.user.id, q);
+        const sc = await storeContext(ctx.user.id);
+        const canon = (await canonicalStore(ctx.user.id, sc, q)).name;
+        const l = await db.findShoppingList(D, ctx.user.id, canon);
         if (l) key = l.id; else note = `Списка «${q}» нет. Показываю все покупки.\n`;
       }
     }
@@ -289,7 +313,8 @@ export function createBot(env) {
 
     const folders = (await db.listFolders(D, ctx.user.id)).filter((f) => f.kind !== 'inbox').map((f) => f.name);
     const nowIso = new Date().toISOString();
-    const when = { ...localNowInfo(ctx.user.tz, nowIso), tz: ctx.user.tz };
+    const sc = await storeContext(ctx.user.id);
+    const when = { ...localNowInfo(ctx.user.tz, nowIso), tz: ctx.user.tz, stores: sc.names.slice(0, 60) };
     const result = await processNote(env, text, folders, when);
 
     // Не получилось разобрать: сохраняем всё как есть одной заметкой
@@ -308,6 +333,7 @@ export function createBot(env) {
       for (const it of shopping) {
         let listId = null;
         if (it.store) {
+          it.store = (await canonicalStore(ctx.user.id, sc, it.store)).name; // «Костко» → Costco
           const k = it.store.toLowerCase();
           if (!ids.has(k)) ids.set(k, await db.getOrCreateShoppingList(D, ctx.user.id, it.store));
           listId = ids.get(k).id;
@@ -379,7 +405,9 @@ export function createBot(env) {
     const file = await downloadFile(env, ctx.api, media.file_id).catch(() => null);
     if (!file) return ctx.reply('Не удалось получить голосовое. Попробуйте ещё раз.');
 
-    const text = await transcribe(env, file.bytes, defaultName, media.mime_type ?? defaultMime);
+    const sc = await storeContext(ctx.user.id);
+    const hint = `Магазины: ${sc.names.slice(0, 30).join(', ')}.`;
+    const text = await transcribe(env, file.bytes, defaultName, media.mime_type ?? defaultMime, hint);
     if (text === null) return ctx.reply('Не удалось распознать голос. Попробуйте ещё раз или напишите текстом.');
     if (!text) return ctx.reply('Не разобрал речь в этом сообщении. Попробуйте ещё раз.');
     return saveNote(ctx, text, 'voice');

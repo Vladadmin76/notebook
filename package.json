@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply notes_db --remote",
     "db:migrate:local": "wrangler d1 migrations apply notes_db --local",
-    "test": "node --test test/auth.test.js test/deepseek.test.js test/timeutil.test.js test/ics.test.js test/reminders.test.js",
+    "test": "node --test test/auth.test.js test/deepseek.test.js test/timeutil.test.js test/ics.test.js test/reminders.test.js test/stores.test.js",
     "check:isolation": "node scripts/isolation-check.mjs",
     "check:trash": "node scripts/trash-check.mjs"
   },

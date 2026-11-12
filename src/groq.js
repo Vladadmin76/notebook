@@ -4,7 +4,7 @@ export const STT_MODEL = 'whisper-large-v3-turbo';
 const TIMEOUT_MS = 40_000;
 
 // Возвращает распознанный текст (может быть пустой строкой) или null при ошибке
-export async function transcribe(env, bytes, filename = 'voice.ogg', mime = 'audio/ogg') {
+export async function transcribe(env, bytes, filename = 'voice.ogg', mime = 'audio/ogg', hint = '') {
   const root = env.GROQ_API_ROOT ?? 'https://api.groq.com';
   const form = new FormData();
   form.append('file', new Blob([bytes], { type: mime }), filename);
@@ -12,6 +12,8 @@ export async function transcribe(env, bytes, filename = 'voice.ogg', mime = 'aud
   form.append('language', 'ru');
   form.append('response_format', 'json');
   form.append('temperature', '0');
+  // Подсказка, как писать названия (у Groq для этого есть поле prompt, до 224 токенов): магазины распознаются как «Costco», а не «Костко»
+  if (hint) form.append('prompt', hint.slice(0, 600));
 
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);

@@ -427,3 +427,45 @@ export async function purgeOld(db, nowIsoStr) {
   const { purgeExpired } = await import('./trash.js'); // корзина: окончательно стираем просроченное
   await purgeExpired(db, nowIsoStr);
 }
+
+
+// ---------- магазины человека ----------
+const parseAliases = (x) => { try { const a = JSON.parse(x); return Array.isArray(a) ? a.filter((v) => typeof v === 'string') : []; } catch { return []; } };
+
+export const listUserStores = (db, userId) =>
+  db.prepare('SELECT id, name, custom, favorite, aliases FROM user_stores WHERE user_id = ? ORDER BY id').bind(userId).all()
+    .then((r) => r.results.map((x) => ({ ...x, custom: !!x.custom, favorite: !!x.favorite, aliases: parseAliases(x.aliases) })));
+
+export async function upsertUserStore(db, userId, name, { custom = false, favorite }) {
+  const rows = await listUserStores(db, userId);
+  const found = rows.find((r) => sameName(r.name, name));
+  if (found) {
+    if (favorite !== undefined) await db.prepare('UPDATE user_stores SET favorite = ? WHERE id = ? AND user_id = ?').bind(favorite ? 1 : 0, found.id, userId).run();
+    return found.name;
+  }
+  await db.prepare('INSERT INTO user_stores (user_id, name, custom, favorite, aliases, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(userId, name, custom ? 1 : 0, favorite ? 1 : 0, '[]', nowIso()).run();
+  return name;
+}
+
+// Запоминаем новое написание магазина (например «Костка» для Costco)
+export async function learnStoreAlias(db, userId, canonical, alias, max = 12) {
+  const a = String(alias).trim();
+  if (!a || a.length > 30 || sameName(a, canonical)) return false;
+  const rows = await listUserStores(db, userId);
+  const found = rows.find((r) => sameName(r.name, canonical));
+  if (found) {
+    if (found.aliases.some((x) => sameName(x, a)) || found.aliases.length >= max) return false;
+    await db.prepare('UPDATE user_stores SET aliases = ? WHERE id = ? AND user_id = ?').bind(JSON.stringify([...found.aliases, a]), found.id, userId).run();
+  } else {
+    await db.prepare('INSERT INTO user_stores (user_id, name, custom, favorite, aliases, created_at) VALUES (?, ?, 0, 0, ?, ?)')
+      .bind(userId, canonical, JSON.stringify([a]), nowIso()).run();
+  }
+  return true;
+}
+
+export const deleteCustomStore = (db, userId, id) =>
+  db.prepare('DELETE FROM user_stores WHERE id = ? AND user_id = ? AND custom = 1').bind(id, userId).run().then((r) => r.meta.changes === 1);
+
+export const shoppingListNames = (db, userId) =>
+  db.prepare('SELECT name FROM shopping_lists WHERE user_id = ? AND deleted_at IS NULL').bind(userId).all().then((r) => r.results.map((x) => x.name));

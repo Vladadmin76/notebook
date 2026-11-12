@@ -7,6 +7,7 @@ import { LIMITS } from './config.js';
 import { utc, isoUtc, planReminder, nextRecurrence, parseRrule, describeRepeat, formatWhen } from './timeutil.js';
 import { buildIcs, googleCalendarUrl, signIcs } from './ics.js';
 import * as trash from './trash.js';
+import { CATALOG, resolveStore, buildEntries, MAX_ALIASES } from './stores.js';
 
 const FALLBACK_FOLDER = 'Разное';
 const FOLDER_NAME_RE = /^[\p{L}\p{N} .,'&-]{1,30}$/u;
@@ -166,6 +167,44 @@ export async function handleAppApi({ request, env, url, user, body }) {
     return json({ month, days });
   }
 
+  // ---------- магазины: перечень, избранное, свои ----------
+  const storesView = async () => {
+    const [rows, listNames] = await Promise.all([db.listUserStores(D, user.id), db.shoppingListNames(D, user.id)]);
+    const row = (n) => rows.find((r) => db.sameName(r.name, n));
+    const hasList = (n) => listNames.some((l) => db.sameName(l, n));
+    const stores = [
+      ...CATALOG.map((c) => ({ name: c.name, group: c.group, custom: false, favorite: !!row(c.name)?.favorite, aliases: [...new Set([...c.aliases, ...(row(c.name)?.aliases ?? [])])], id: row(c.name)?.id ?? null, has_list: hasList(c.name) })),
+      ...rows.filter((r) => r.custom).map((r) => ({ name: r.name, group: 'Свои', custom: true, favorite: r.favorite, aliases: r.aliases, id: r.id, has_list: hasList(r.name) })),
+    ];
+    return { stores };
+  };
+  if (path === '/api/stores' && get) return json(await storesView());
+  if (path === '/api/stores/favorite' && post) {
+    const name = String(body.name ?? '').trim();
+    const known = CATALOG.some((c) => db.sameName(c.name, name)) || (await db.listUserStores(D, user.id)).some((r) => r.custom && db.sameName(r.name, name));
+    if (!known) return json({ error: 'not_found' }, 404);
+    const canon = CATALOG.find((c) => db.sameName(c.name, name))?.name ?? name;
+    await db.upsertUserStore(D, user.id, canon, { custom: false, favorite: body.favorite === true });
+    return json(await storesView());
+  }
+  if (path === '/api/stores/add' && post) {
+    const name = String(body.name ?? '').trim().replace(/\s+/g, ' ');
+    if (!FOLDER_NAME_RE.test(name)) return json({ error: 'bad_name' }, 400);
+    const entries = buildEntries(await db.listUserStores(D, user.id), []);
+    const m = resolveStore(name, entries);
+    if (m) {
+      // Такой магазин уже есть (или очень похож): просто отмечаем избранным
+      await db.upsertUserStore(D, user.id, m.name, { custom: m.source === 'custom', favorite: true });
+      if (m.how !== 'exact' && m.how !== 'alias') await db.learnStoreAlias(D, user.id, m.name, name, MAX_ALIASES);
+      return json({ ...(await storesView()), existing: m.name });
+    }
+    await db.upsertUserStore(D, user.id, name, { custom: true, favorite: true });
+    return json(await storesView());
+  }
+  if (path === '/api/stores/delete' && post) {
+    return (await db.deleteCustomStore(D, user.id, intOr(body.id))) ? json(await storesView()) : json({ error: 'not_found' }, 404);
+  }
+
   // ---------- корзина ----------
   if (path === '/api/trash' && get) return json(await trash.trashOverview(D, user.id));
   if (path === '/api/trash/count' && get) { const n = await trash.trashCount(D, user.id); return json({ count: n, full: n > 0 }); }
@@ -265,8 +304,12 @@ export async function handleAppApi({ request, env, url, user, body }) {
     return json(await shopView(key));
   }
   if (path === '/api/shopping/lists/create' && post) {
-    const name = listName(body.name);
+    let name = listName(body.name);
     if (!name) return json({ error: 'bad_name' }, 400);
+    // «Костко» превращается в Costco, а не в отдельный список
+    const entries = buildEntries(await db.listUserStores(D, user.id), await db.shoppingListNames(D, user.id));
+    const m = resolveStore(name, entries);
+    if (m) name = m.name;
     const l = await db.getOrCreateShoppingList(D, user.id, name);
     return json({ id: l.id, ...(await shopView(l.id)) });
   }

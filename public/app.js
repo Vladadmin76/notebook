@@ -439,7 +439,7 @@ async function screenShopping() {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.id === 'newList') {
-      const name = await askText('Название магазина или списка');
+      const name = await pickStoreName(data.lists.map((l) => l.name));
       if (!name) return;
       const r = await api('/api/shopping/lists/create', { name });
       if (r.ok) { shopKey = String(r.data.id); data = r.data; draw(); } else notify(errText(r.data.error));
@@ -486,6 +486,31 @@ async function screenShopping() {
   };
   $('add').onclick = add;
   $('item').onkeydown = (e) => { if (e.key === 'Enter') add(); };
+}
+
+// Новый список: сначала избранные магазины (без дублей), либо своё название
+async function pickStoreName(existing) {
+  const r = await api('/api/stores');
+  const have = new Set(existing.map((n) => n.toLowerCase()));
+  const favs = r.ok ? r.data.stores.filter((x) => x.favorite && !have.has(x.name.toLowerCase())) : [];
+  if (!favs.length) return askText('Название магазина или списка');
+  return new Promise((resolve) => {
+    const m = document.createElement('div');
+    m.className = 'modal';
+    m.innerHTML = `<div class="sheet"><h3>Новый список</h3>
+      ${favs.map((x) => `<button class="ghost wide" data-store="${esc(x.name)}">${esc(x.name)}</button>`).join('')}
+      <button class="ghost wide" data-store="__other__">Другое название…</button>
+      <button class="wide" data-store="__cancel__">Отмена</button></div>`;
+    document.body.appendChild(m);
+    m.onclick = async (e) => {
+      const b = e.target.closest('[data-store]');
+      if (!b && e.target !== m) return;
+      m.remove();
+      if (!b || b.dataset.store === '__cancel__') return resolve(null);
+      if (b.dataset.store === '__other__') return resolve(await askText('Название магазина или списка'));
+      resolve(b.dataset.store);
+    };
+  });
 }
 
 // Окно выбора списка для переноса пункта: возвращает номер списка, null («Без магазина») или undefined (отмена)
@@ -567,6 +592,7 @@ function screenSettings() {
       <p>${esc(me.tz)}${me.tz !== browserTz ? `<br><span class="muted">Устройство сообщает: ${esc(browserTz)}</span>` : ''}</p>
       ${me.tz !== browserTz ? '<button id="tzfix" class="ghost">Взять с устройства</button>' : ''}
       <h3>Инструменты</h3>
+      <button class="ghost wide" id="storesBtn">🏪 Магазины</button>
       <button class="ghost wide" id="pwBtn">🔑 Генератор паролей</button>
       <h3>Бот</h3>
       <p id="botstate">${me.can_write ? '✅ Бот подключён и может писать вам.' : 'Разрешите боту писать вам, чтобы он присылал напоминания и принимал заметки.'}</p>
@@ -576,6 +602,7 @@ function screenSettings() {
 
   bindBack();
   $('pwBtn').onclick = () => show(screenPasswords);
+  $('storesBtn').onclick = () => show(screenStores);
   $('themes').onclick = async (e) => {
     const v = e.target.dataset && e.target.dataset.v;
     if (!v) return;
@@ -614,6 +641,65 @@ function holdToOpen(el, onTap, onHold) {
   el.addEventListener('click', () => { if (!held) onTap(); held = false; });
   // Запрет системного меню долгого нажатия и выделения (iOS/Android)
   ['contextmenu', 'selectstart', 'dragstart'].forEach((ev) => el.addEventListener(ev, (e) => e.preventDefault()));
+}
+
+// ---------- магазины ----------
+async function screenStores() {
+  h(`${subHeader('Магазины')}<p class="muted">Загрузка…</p>`);
+  bindBack();
+  const r = await api('/api/stores');
+  if (!r.ok) { h(`${subHeader('Магазины')}<div class="card"><p>Не удалось загрузить.</p></div>`); return bindBack(); }
+  let stores = r.data.stores;
+  let q = '';
+  h(`${subHeader('Магазины')}
+    <section class="card">
+      <p class="muted small">Отметьте звёздочкой магазины, где вы покупаете. Бот будет узнавать их названия, как бы вы их ни произнесли («Костко», «Костка» всё равно будет Costco), и складывать покупки в один список. Незнакомый магазин бот создаст сам.</p>
+      <input id="sq" type="search" placeholder="Найти магазин" autocomplete="off">
+      <div id="slist"></div>
+      <button class="ghost wide" id="addStore">+ Свой магазин</button>
+    </section>`);
+  bindBack();
+  const draw = () => {
+    const f = q.toLowerCase();
+    const shown = stores.filter((x) => !f || x.name.toLowerCase().includes(f) || x.aliases.some((a) => a.toLowerCase().includes(f)));
+    const groups = [];
+    const fav = shown.filter((x) => x.favorite);
+    if (fav.length) groups.push(['Избранные', fav]);
+    for (const g of ['Продукты и универмаги', 'Хозяйственные', 'Свои']) {
+      const items = shown.filter((x) => !x.favorite && x.group === g);
+      if (items.length) groups.push([g, items]);
+    }
+    $('slist').innerHTML = groups.map(([g, items]) => `<div class="sep">${esc(g)}</div>${items.map((x) => `<div class="srow">
+        <button class="star ${x.favorite ? 'on' : ''}" data-fav="${esc(x.name)}" aria-label="В избранное">${x.favorite ? '★' : '☆'}</button>
+        <div class="sname"><div>${esc(x.name)}${x.has_list ? ' <span class="tag">есть список</span>' : ''}</div>
+          ${x.aliases.length ? `<div class="meta">${esc(x.aliases.slice(0, 4).join(', '))}</div>` : ''}</div>
+        ${x.custom ? `<button class="x" data-del="${x.id}" aria-label="Убрать">✕</button>` : ''}</div>`).join('')}`).join('') || '<p class="muted">Ничего не найдено.</p>';
+  };
+  draw();
+  $('sq').oninput = (e) => { q = e.target.value.trim(); draw(); };
+  $('slist').onclick = async (e) => {
+    const star = e.target.closest('[data-fav]');
+    if (star) {
+      const st = stores.find((x) => x.name === star.dataset.fav);
+      const r2 = await api('/api/stores/favorite', { name: st.name, favorite: !st.favorite });
+      if (r2.ok) { stores = r2.data.stores; draw(); haptic1(); }
+      return;
+    }
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      if (!(await confirmBox('Убрать этот магазин из перечня? Список покупок с таким названием останется.'))) return;
+      const r2 = await api('/api/stores/delete', { id: Number(del.dataset.del) });
+      if (r2.ok) { stores = r2.data.stores; draw(); }
+    }
+  };
+  $('addStore').onclick = async () => {
+    const name = await askText('Название магазина');
+    if (!name) return;
+    const r2 = await api('/api/stores/add', { name });
+    if (!r2.ok) return notify(errText(r2.data.error));
+    stores = r2.data.stores; draw();
+    toast(r2.data.existing ? `Это «${r2.data.existing}», отметил избранным` : 'Магазин добавлен');
+  };
 }
 
 // ---------- корзина ----------

@@ -137,6 +137,17 @@ check('«Очистить корзину» второго человека не 
 await call(A, '/api/trash/restore', { type: 'note', id: TN });
 await call(A, '/api/trash/purge', { type: 'folder', id: tF });
 
+// --- 5в. магазины ---
+const SX = (await call(A, '/api/stores/add', { name: 'Секретный рынок' })).data.stores.find((x) => x.name === 'Секретный рынок');
+await call(A, '/api/stores/favorite', { name: 'Costco', favorite: true });
+const sB = (await call(Bd, '/api/stores')).data.stores;
+check('свой магазин админа виден только ему', !!SX && !sB.some((x) => x.name === 'Секретный рынок'));
+check('избранное админа не попадает к другому человеку', !sB.some((x) => x.favorite));
+check('другой человек не может удалить чужой магазин: 404', (await call(Bd, '/api/stores/delete', { id: SX.id })).status === 404);
+check('магазин админа остался после попытки удаления', (await call(A, '/api/stores')).data.stores.some((x) => x.name === 'Секретный рынок'));
+await call(A, '/api/stores/delete', { id: SX.id });
+await call(A, '/api/stores/favorite', { name: 'Costco', favorite: false });
+
 // --- 6. права администратора ---
 for (const p of ['/api/admin/overview']) check(`обычному человеку ${p}: 403`, (await call(Bd, p)).status === 403);
 for (const p of ['/api/admin/invite', '/api/admin/block', '/api/admin/unblock', '/api/admin/remove', '/api/admin/revoke'])

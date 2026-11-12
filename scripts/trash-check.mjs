@@ -59,9 +59,9 @@ const f1 = (await call('/api/folders/create', { name: FOLD })).data.id;
 const ids = [];
 for (let i = 1; i <= 7; i++) {
   await say(`${TAG} заметка ${i}`);
-  const raz = (await folders()).find((f) => f.kind === 'misc');
-  const n = (await notesIn(raz.id)).find((x) => x.text.includes(`${TAG} заметка ${i}`));
-  ids.push(n?.id);
+  // ищем по метке во всех папках: куда бот положит заметку, зависит от того, доступен ли DeepSeek
+  const found = (await call(`/api/notes?q=${encodeURIComponent(`${TAG} заметка ${i}`)}`)).data.notes[0];
+  ids.push(found?.id);
 }
 check('создано 7 заметок', ids.every(Boolean), JSON.stringify(ids));
 for (const id of ids.slice(0, 5)) await call('/api/notes/update', { id, folder_id: f1 });
