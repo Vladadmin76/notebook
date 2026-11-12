@@ -151,20 +151,13 @@ await press(`mvn:${nid2}`);
 await say(NF.toUpperCase());
 check('бот: если папка уже есть (другой регистр), дубля нет', (await folders()).filter((f) => f.name.toLowerCase() === NF.toLowerCase()).length === 1);
 
-// --- покупки ---
-const L = (await call('/api/shopping/lists/create', { name: `Магазин ${TAG}` })).data.id;
-await call('/api/shopping/add', { name: 'Молоко', list_id: L });
-await call('/api/shopping/add', { name: 'Яйца', list_id: L });
-const delList = await call('/api/shopping/lists/delete', { id: L });
-check('список покупок удаляется', delList.status === 200);
-check('удалённого списка и его пунктов нет в живых', !delList.data.lists.some((l) => l.id === L) && !delList.data.items.some((i) => ['Молоко', 'Яйца'].includes(i.name) && i.list_id === L));
-t = await trash();
-check('список лежит в корзине с 2 пунктами', t.lists.some((l) => l.id === L && l.n === 2), JSON.stringify(t.lists));
+// --- покупки: список магазина с пунктами удалить нельзя, а отдельные пункты уходят в корзину ---
 const L2 = (await call('/api/shopping/lists/create', { name: `Магазин ${TAG}` })).data.id;
-check('новый список с тем же названием создаётся', !!L2 && L2 !== L);
-const rl = await call('/api/trash/restore', { type: 'list', id: L });
-check('возврат списка объединяет с существующим', rl.data.merged === true && rl.data.count === 2, JSON.stringify(rl.data));
-check('в объединённом списке 2 пункта', (await call(`/api/shopping?list=${L2}`)).data.items.length === 2);
+await call('/api/shopping/add', { name: 'Молоко', list_id: L2 });
+await call('/api/shopping/add', { name: 'Яйца', list_id: L2 });
+const delList = await call('/api/shopping/lists/delete', { id: L2 });
+check('список магазина с пунктами удалить нельзя (409)', delList.status === 409 && delList.data.error === 'not_empty', JSON.stringify(delList));
+check('список и пункты остались на месте', (await call(`/api/shopping?list=${L2}`)).data.items.length === 2);
 const it = (await call(`/api/shopping?list=${L2}`)).data.items[0];
 await call('/api/shopping/delete', { id: it.id });
 check('удалённый пункт (✕) лежит в корзине', (await trash()).items.some((i) => i.id === it.id));
@@ -174,9 +167,18 @@ await call('/api/shopping/toggle', { id: it.id });
 await call('/api/shopping/clear', { view: String(L2) });
 check('«Очистить купленное» кладёт купленное в корзину', (await trash()).items.some((i) => i.id === it.id));
 await call('/api/trash/restore', { type: 'item', id: it.id });
+check('пункт из удалённого списка возвращается в «Без магазина»', await (async () => {
+  const x = (await call(`/api/shopping?list=${L2}`)).data.items.find((i) => i.name === 'Яйца');
+  await call('/api/shopping/delete', { id: x.id });
+  for (const i of (await call(`/api/shopping?list=${L2}`)).data.items) await call('/api/shopping/delete', { id: i.id });
+  await call('/api/shopping/lists/delete', { id: L2 });             // список пуст: магазин убирается
+  const r = await call('/api/trash/restore', { type: 'item', id: x.id });
+  return r.data.list_id === null;
+})());
 
 // --- окончательное удаление и срок хранения ---
-const extra = (await call('/api/shopping/add', { name: 'Лишнее', list_id: L2 })).data.items.find((i) => i.name === 'Лишнее');
+const L3 = (await call('/api/shopping/lists/create', { name: `Лавка ${TAG}` })).data.id;
+const extra = (await call('/api/shopping/add', { name: 'Лишнее', list_id: L3 })).data.items.find((i) => i.name === 'Лишнее');
 await call('/api/shopping/delete', { id: extra.id });
 check('«Удалить навсегда» стирает пункт', (await call('/api/trash/purge', { type: 'item', id: extra.id })).status === 200 && !(await trash()).items.some((i) => i.id === extra.id));
 check('повторное удаление навсегда: 404', (await call('/api/trash/purge', { type: 'item', id: extra.id })).status === 404);
@@ -190,8 +192,9 @@ t = await trash();
 check('корзина пуста', t.folders.length + t.notes.length + t.lists.length + t.items.length === 0, JSON.stringify(t).slice(0, 200));
 
 // --- уборка тестовых данных ---
+for (const i of (await call(`/api/shopping?list=${L3}`)).data.items) await call('/api/shopping/delete', { id: i.id });
+await call('/api/shopping/lists/delete', { id: L3 });
 for (const f of await folders()) if (f.name.includes(TAG)) await call('/api/folders/delete', { id: f.id });
-await call('/api/shopping/lists/delete', { id: L2 });
 await call('/api/trash/empty', {});
 for (const n of (await call(`/api/notes?q=${encodeURIComponent(TAG)}`)).data.notes) await call('/api/notes/delete', { id: n.id });
 await call('/api/trash/empty', {});

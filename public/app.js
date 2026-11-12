@@ -401,9 +401,9 @@ async function screenShopping() {
     const total = data.none.open + data.lists.reduce((a, l) => a + l.open, 0);
     const chip = (k, label, n) => `<button class="chip ${String(k) === String(shopKey) ? 'on' : ''}" data-key="${k}">${esc(label)}${n ? ` <b>${n}</b>` : ''}</button>`;
     $('lists').innerHTML = chip('all', 'Все', total) + data.lists.map((l) => chip(l.id, l.name, l.open)).join('') + chip('none', 'Без магазина', data.none.open)
-      + '<button class="chip add" id="newList" aria-label="Новый список">+ Список</button>';
+      + '<button class="chip add" id="newList" aria-label="Добавить магазин">+ Магазин</button>';
     $('listActions').innerHTML = curList()
-      ? '<div class="btnrow"><button class="ghost mini" id="renList">Переименовать</button><button class="ghost mini danger" id="delList">Удалить список</button></div>' : '';
+      ? `<div class="btnrow">${curList().custom ? '<button class="ghost mini" id="renList">Переименовать</button>' : ''}<button class="ghost mini danger" id="delList">Убрать магазин</button></div>` : '';
 
     const open = data.items.filter((i) => !i.done), done = data.items.filter((i) => i.done);
     const row = (i) => `<div class="shop ${i.done ? 'done' : ''}" data-id="${i.id}"><span class="box">${i.done ? '✓' : ''}</span><span class="name">${esc(i.name)}</span>
@@ -441,8 +441,9 @@ async function screenShopping() {
     if (b.id === 'newList') {
       const name = await pickStoreName(data.lists.map((l) => l.name));
       if (!name) return;
+      // Магазин добавляется в избранные, его список появляется сам
       const r = await api('/api/shopping/lists/create', { name });
-      if (r.ok) { shopKey = String(r.data.id); data = r.data; draw(); } else notify(errText(r.data.error));
+      if (r.ok) { shopKey = String(r.data.id); data = r.data; draw(); haptic(); } else notify(errText(r.data.error));
     } else if (b.dataset.key !== undefined) { shopKey = b.dataset.key; load(); }
   };
   $('listActions').onclick = async (e) => {
@@ -454,9 +455,11 @@ async function screenShopping() {
       const r = await api('/api/shopping/lists/rename', { id: l.id, name });
       if (r.ok) { data = r.data; draw(); } else notify(errText(r.data.error));
     } else if (e.target.id === 'delList') {
-      if (!(await confirmBox(`Удалить список «${l.name}»? Он вместе с пунктами уйдёт в корзину на 7 дней.`))) return;
+      if (l.open + l.done > 0) return notify(`В списке «${l.name}» ещё есть пункты (${l.open + l.done}). Сначала очистите список, потом можно убрать магазин.`);
+      if (!(await confirmBox(`Убрать магазин «${l.name}»? Список пуст.`))) return;
       const r = await api('/api/shopping/lists/delete', { id: l.id });
-      if (r.ok) { shopKey = 'all'; data = r.data; draw(); } else notify(errText(r.data.error));
+      if (r.ok) { shopKey = 'all'; data = r.data; draw(); }
+      else notify(r.data.error === 'not_empty' ? `В списке ещё есть пункты (${r.data.count}). Сначала очистите список.` : errText(r.data.error));
     }
   };
   $('items').onclick = async (e) => {
@@ -488,18 +491,18 @@ async function screenShopping() {
   $('item').onkeydown = (e) => { if (e.key === 'Enter') add(); };
 }
 
-// Новый список: сначала избранные магазины (без дублей), либо своё название
+// Добавление магазина: предлагаем те, что ещё не в избранном (из готового перечня), либо своё название
 async function pickStoreName(existing) {
   const r = await api('/api/stores');
   const have = new Set(existing.map((n) => n.toLowerCase()));
-  const favs = r.ok ? r.data.stores.filter((x) => x.favorite && !have.has(x.name.toLowerCase())) : [];
-  if (!favs.length) return askText('Название магазина или списка');
+  const rest = r.ok ? r.data.stores.filter((x) => !x.custom && !x.favorite && !have.has(x.name.toLowerCase())) : [];
+  if (!rest.length) return askText('Название магазина');
   return new Promise((resolve) => {
     const m = document.createElement('div');
     m.className = 'modal';
-    m.innerHTML = `<div class="sheet"><h3>Новый список</h3>
-      ${favs.map((x) => `<button class="ghost wide" data-store="${esc(x.name)}">${esc(x.name)}</button>`).join('')}
-      <button class="ghost wide" data-store="__other__">Другое название…</button>
+    m.innerHTML = `<div class="sheet scroll"><h3>Добавить магазин</h3>
+      <button class="ghost wide" data-store="__other__">Другой магазин (своё название)…</button>
+      ${rest.map((x) => `<button class="ghost wide" data-store="${esc(x.name)}">${esc(x.name)}</button>`).join('')}
       <button class="wide" data-store="__cancel__">Отмена</button></div>`;
     document.body.appendChild(m);
     m.onclick = async (e) => {
@@ -507,7 +510,7 @@ async function pickStoreName(existing) {
       if (!b && e.target !== m) return;
       m.remove();
       if (!b || b.dataset.store === '__cancel__') return resolve(null);
-      if (b.dataset.store === '__other__') return resolve(await askText('Название магазина или списка'));
+      if (b.dataset.store === '__other__') return resolve(await askText('Название магазина'));
       resolve(b.dataset.store);
     };
   });
@@ -653,7 +656,7 @@ async function screenStores() {
   let q = '';
   h(`${subHeader('Магазины')}
     <section class="card">
-      <p class="muted small">Отметьте звёздочкой магазины, где вы покупаете. Бот будет узнавать их названия, как бы вы их ни произнесли («Костко», «Костка» всё равно будет Costco), и складывать покупки в один список. Незнакомый магазин бот создаст сам.</p>
+      <p class="muted small">Отметьте звёздочкой магазины, где вы покупаете: у каждого появится свой список на вкладке «Покупки». Бот узнаёт их названия, как бы вы их ни произнесли («Костко», «Костка» всё равно Costco). Новый магазин, который вы назовёте боту, добавится сюда сам. Убрать магазин можно, когда его список пуст.</p>
       <input id="sq" type="search" placeholder="Найти магазин" autocomplete="off">
       <div id="slist"></div>
       <button class="ghost wide" id="addStore">+ Свой магазин</button>
@@ -671,7 +674,7 @@ async function screenStores() {
     }
     $('slist').innerHTML = groups.map(([g, items]) => `<div class="sep">${esc(g)}</div>${items.map((x) => `<div class="srow">
         <button class="star ${x.favorite ? 'on' : ''}" data-fav="${esc(x.name)}" aria-label="В избранное">${x.favorite ? '★' : '☆'}</button>
-        <div class="sname"><div>${esc(x.name)}${x.has_list ? ' <span class="tag">есть список</span>' : ''}</div>
+        <div class="sname"><div>${esc(x.name)}${x.items ? ` <span class="tag">в списке: ${x.items}</span>` : ''}</div>
           ${x.aliases.length ? `<div class="meta">${esc(x.aliases.slice(0, 4).join(', '))}</div>` : ''}</div>
         ${x.custom ? `<button class="x" data-del="${x.id}" aria-label="Убрать">✕</button>` : ''}</div>`).join('')}`).join('') || '<p class="muted">Ничего не найдено.</p>';
   };
@@ -683,13 +686,15 @@ async function screenStores() {
       const st = stores.find((x) => x.name === star.dataset.fav);
       const r2 = await api('/api/stores/favorite', { name: st.name, favorite: !st.favorite });
       if (r2.ok) { stores = r2.data.stores; draw(); haptic1(); }
+      else if (r2.data.error === 'not_empty') notify(`В списке «${r2.data.name}» ещё есть пункты (${r2.data.count}). Сначала очистите список, потом можно убрать магазин.`);
       return;
     }
     const del = e.target.closest('[data-del]');
     if (del) {
-      if (!(await confirmBox('Убрать этот магазин из перечня? Список покупок с таким названием останется.'))) return;
+      if (!(await confirmBox('Убрать этот магазин и его пустой список?'))) return;
       const r2 = await api('/api/stores/delete', { id: Number(del.dataset.del) });
       if (r2.ok) { stores = r2.data.stores; draw(); }
+      else if (r2.data.error === 'not_empty') notify(`В списке «${r2.data.name}» ещё есть пункты (${r2.data.count}). Сначала очистите список.`);
     }
   };
   $('addStore').onclick = async () => {

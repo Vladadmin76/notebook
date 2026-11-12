@@ -1,5 +1,6 @@
 import { nowIso, randomToken } from './util.js';
 import { START_FOLDERS, FOLDER_KINDS } from './config.js';
+import { CATALOG } from './stores.js';
 
 export const kindOf = (name) => FOLDER_KINDS[Object.keys(FOLDER_KINDS).find((k) => k.toLowerCase() === String(name).toLowerCase())] ?? null;
 
@@ -469,3 +470,61 @@ export const deleteCustomStore = (db, userId, id) =>
 
 export const shoppingListNames = (db, userId) =>
   db.prepare('SELECT name FROM shopping_lists WHERE user_id = ? AND deleted_at IS NULL').bind(userId).all().then((r) => r.results.map((x) => x.name));
+
+
+// ---------- избранные магазины = списки покупок ----------
+const catalogName = (name) => CATALOG.find((c) => sameName(c.name, name))?.name ?? null;
+
+// Сколько пунктов в списке (купленные тоже считаются, пока их не очистили)
+export const countListItems = (db, userId, listId) =>
+  db.prepare('SELECT COUNT(*) AS n FROM shopping_items WHERE user_id = ? AND list_id = ? AND deleted_at IS NULL').bind(userId, listId).first().then((r) => r.n);
+
+// Магазин в избранное: у него появляется список покупок. Свой (не из перечня) магазин создаётся здесь же.
+export async function addFavoriteStore(db, userId, name, { custom } = {}) {
+  const canon = catalogName(name);
+  const isCustom = canon ? false : (custom ?? true);
+  const finalName = canon ?? name;
+  await upsertUserStore(db, userId, finalName, { custom: isCustom, favorite: true });
+  const list = await getOrCreateShoppingList(db, userId, finalName);
+  return { name: finalName, list };
+}
+
+// Убрать из избранного можно только когда список пуст; пустой список исчезает вместе с магазином
+export async function removeFavoriteStore(db, userId, name) {
+  const list = await findShoppingList(db, userId, name);
+  const count = list ? await countListItems(db, userId, list.id) : 0;
+  if (count > 0) return { ok: false, error: 'not_empty', count, name: list.name };
+  if (list) await db.prepare('DELETE FROM shopping_lists WHERE id = ? AND user_id = ?').bind(list.id, userId).run();
+  const rows = await listUserStores(db, userId);
+  const row = rows.find((r) => sameName(r.name, name));
+  if (row) {
+    if (row.custom) await db.prepare('DELETE FROM user_stores WHERE id = ? AND user_id = ?').bind(row.id, userId).run();
+    else await db.prepare('UPDATE user_stores SET favorite = 0 WHERE id = ? AND user_id = ?').bind(row.id, userId).run();
+  }
+  return { ok: true };
+}
+
+// Приводим в соответствие: каждый список покупок это избранный магазин, у каждого избранного магазина есть список
+export async function syncStoresWithLists(db, userId) {
+  const [rows, listNames] = await Promise.all([listUserStores(db, userId), shoppingListNames(db, userId)]);
+  for (const ln of listNames) {
+    const row = rows.find((r) => sameName(r.name, ln));
+    if (!row) await upsertUserStore(db, userId, catalogName(ln) ?? ln, { custom: !catalogName(ln), favorite: true });
+    else if (!row.favorite) await upsertUserStore(db, userId, row.name, { favorite: true });
+  }
+  for (const r of rows) if (r.favorite && !listNames.some((ln) => sameName(ln, r.name))) await getOrCreateShoppingList(db, userId, r.name);
+}
+
+// Переименовать можно только свой магазин; меняется и название списка
+export async function renameCustomStore(db, userId, oldName, newName) {
+  const rows = await listUserStores(db, userId);
+  const row = rows.find((r) => r.custom && sameName(r.name, oldName));
+  if (!row) return 'protected';
+  const clash = rows.find((r) => sameName(r.name, newName) && r.id !== row.id) || CATALOG.some((c) => sameName(c.name, newName) && !sameName(c.name, oldName));
+  if (clash) return 'exists';
+  const list = await findShoppingList(db, userId, oldName);
+  const stmts = [db.prepare('UPDATE user_stores SET name = ? WHERE id = ? AND user_id = ?').bind(newName, row.id, userId)];
+  if (list) stmts.push(db.prepare('UPDATE shopping_lists SET name = ? WHERE id = ? AND user_id = ?').bind(newName, list.id, userId));
+  await db.batch(stmts);
+  return 'ok';
+}

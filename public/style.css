@@ -156,3 +156,5 @@ button.trashbtn { padding: 0; } button.trashbtn svg { width: 30px; height: 30px;
 button.star { width: 40px; flex: 0 0 40px; margin: 0; padding: 4px; background: transparent; color: var(--muted); font-size: 1.5rem; line-height: 1; }
 button.star.on { color: #e0a800; }
 .srow .x { width: 32px; margin: 0; padding: 4px; background: transparent; color: var(--muted); }
+
+.sheet.scroll { max-height: 80vh; overflow-y: auto; }

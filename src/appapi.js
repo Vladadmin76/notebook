@@ -169,40 +169,48 @@ export async function handleAppApi({ request, env, url, user, body }) {
 
   // ---------- магазины: перечень, избранное, свои ----------
   const storesView = async () => {
-    const [rows, listNames] = await Promise.all([db.listUserStores(D, user.id), db.shoppingListNames(D, user.id)]);
+    await db.syncStoresWithLists(D, user.id);
+    const [rows, sum] = await Promise.all([db.listUserStores(D, user.id), db.listShoppingLists(D, user.id)]);
     const row = (n) => rows.find((r) => db.sameName(r.name, n));
-    const hasList = (n) => listNames.some((l) => db.sameName(l, n));
+    const items = (n) => { const l = sum.lists.find((x) => db.sameName(x.name, n)); return l ? l.open + l.done : 0; };
     const stores = [
-      ...CATALOG.map((c) => ({ name: c.name, group: c.group, custom: false, favorite: !!row(c.name)?.favorite, aliases: [...new Set([...c.aliases, ...(row(c.name)?.aliases ?? [])])], id: row(c.name)?.id ?? null, has_list: hasList(c.name) })),
-      ...rows.filter((r) => r.custom).map((r) => ({ name: r.name, group: 'Свои', custom: true, favorite: r.favorite, aliases: r.aliases, id: r.id, has_list: hasList(r.name) })),
+      ...CATALOG.map((c) => ({ name: c.name, group: c.group, custom: false, favorite: !!row(c.name)?.favorite, aliases: [...new Set([...c.aliases, ...(row(c.name)?.aliases ?? [])])], id: row(c.name)?.id ?? null, items: items(c.name) })),
+      ...rows.filter((r) => r.custom).map((r) => ({ name: r.name, group: 'Свои', custom: true, favorite: r.favorite, aliases: r.aliases, id: r.id, items: items(r.name) })),
     ];
     return { stores };
   };
+  const notEmpty = (res) => json({ error: res.error, count: res.count, name: res.name }, 409);
   if (path === '/api/stores' && get) return json(await storesView());
   if (path === '/api/stores/favorite' && post) {
     const name = String(body.name ?? '').trim();
     const known = CATALOG.some((c) => db.sameName(c.name, name)) || (await db.listUserStores(D, user.id)).some((r) => r.custom && db.sameName(r.name, name));
     if (!known) return json({ error: 'not_found' }, 404);
-    const canon = CATALOG.find((c) => db.sameName(c.name, name))?.name ?? name;
-    await db.upsertUserStore(D, user.id, canon, { custom: false, favorite: body.favorite === true });
+    if (body.favorite === true) await db.addFavoriteStore(D, user.id, name);
+    else {
+      const res = await db.removeFavoriteStore(D, user.id, name);
+      if (!res.ok) return notEmpty(res); // пока в списке есть пункты, убрать магазин из избранного нельзя
+    }
     return json(await storesView());
   }
   if (path === '/api/stores/add' && post) {
     const name = String(body.name ?? '').trim().replace(/\s+/g, ' ');
     if (!FOLDER_NAME_RE.test(name)) return json({ error: 'bad_name' }, 400);
-    const entries = buildEntries(await db.listUserStores(D, user.id), []);
+    const entries = buildEntries(await db.listUserStores(D, user.id), await db.shoppingListNames(D, user.id));
     const m = resolveStore(name, entries);
     if (m) {
-      // Такой магазин уже есть (или очень похож): просто отмечаем избранным
-      await db.upsertUserStore(D, user.id, m.name, { custom: m.source === 'custom', favorite: true });
-      if (m.how !== 'exact' && m.how !== 'alias') await db.learnStoreAlias(D, user.id, m.name, name, MAX_ALIASES);
+      // Такой магазин уже есть (или очень похож): отмечаем избранным, список появится сам
+      await db.addFavoriteStore(D, user.id, m.name, { custom: m.source !== 'catalog' });
+      if (m.how === 'fuzzy' || m.how === 'sound') await db.learnStoreAlias(D, user.id, m.name, name, MAX_ALIASES);
       return json({ ...(await storesView()), existing: m.name });
     }
-    await db.upsertUserStore(D, user.id, name, { custom: true, favorite: true });
+    await db.addFavoriteStore(D, user.id, name, { custom: true });
     return json(await storesView());
   }
   if (path === '/api/stores/delete' && post) {
-    return (await db.deleteCustomStore(D, user.id, intOr(body.id))) ? json(await storesView()) : json({ error: 'not_found' }, 404);
+    const row = (await db.listUserStores(D, user.id)).find((r) => r.id === intOr(body.id) && r.custom);
+    if (!row) return json({ error: 'not_found' }, 404);
+    const res = await db.removeFavoriteStore(D, user.id, row.name);
+    return res.ok ? json(await storesView()) : notEmpty(res);
   }
 
   // ---------- корзина ----------
@@ -251,8 +259,10 @@ export async function handleAppApi({ request, env, url, user, body }) {
 
   // ---------- списки покупок (по магазинам) ----------
   const shopView = async (key) => {
-    const [sum, items] = await Promise.all([db.listShoppingLists(D, user.id), db.listShopping(D, user.id, key)]);
-    return { lists: sum.lists, none: sum.none, items };
+    const [sum, items, rows] = await Promise.all([db.listShoppingLists(D, user.id), db.listShopping(D, user.id, key), db.listUserStores(D, user.id)]);
+    // custom: свой магазин (его можно переименовать); у магазинов из перечня название менять нельзя
+    const lists = sum.lists.map((l) => ({ ...l, custom: rows.some((r) => r.custom && db.sameName(r.name, l.name)) }));
+    return { lists, none: sum.none, items };
   };
   // Ключ списка из запроса: 'all', 'none' или номер своего списка
   const parseKey = async (v) => {
@@ -267,6 +277,7 @@ export async function handleAppApi({ request, env, url, user, body }) {
   };
 
   if (path === '/api/shopping' && get) {
+    await db.syncStoresWithLists(D, user.id); // каждый список покупок это избранный магазин
     const key = await parseKey(url.searchParams.get('list'));
     if (key === null) return json({ error: 'not_found' }, 404);
     return json(await shopView(key));
@@ -303,26 +314,29 @@ export async function handleAppApi({ request, env, url, user, body }) {
     await db.clearDoneShopping(D, user.id, key);
     return json(await shopView(key));
   }
+  // Список покупок это избранный магазин: создаётся добавлением магазина, убирается только пустым
   if (path === '/api/shopping/lists/create' && post) {
-    let name = listName(body.name);
+    const name = listName(body.name);
     if (!name) return json({ error: 'bad_name' }, 400);
-    // «Костко» превращается в Costco, а не в отдельный список
     const entries = buildEntries(await db.listUserStores(D, user.id), await db.shoppingListNames(D, user.id));
-    const m = resolveStore(name, entries);
-    if (m) name = m.name;
-    const l = await db.getOrCreateShoppingList(D, user.id, name);
-    return json({ id: l.id, ...(await shopView(l.id)) });
+    const m = resolveStore(name, entries); // «Костко» превращается в Costco
+    const fav = await db.addFavoriteStore(D, user.id, m ? m.name : name);
+    return json({ id: fav.list.id, ...(await shopView(fav.list.id)) });
   }
   if (path === '/api/shopping/lists/rename' && post) {
     const name = listName(body.name);
     if (!name) return json({ error: 'bad_name' }, 400);
-    const res = await db.renameShoppingList(D, user.id, intOr(body.id), name);
-    return res === 'ok' ? json(await shopView(intOr(body.id))) : json({ error: res === 'exists' ? 'exists' : 'not_found' }, res === 'exists' ? 409 : 404);
+    const l = await db.getShoppingList(D, user.id, intOr(body.id));
+    if (!l) return json({ error: 'not_found' }, 404);
+    const res = await db.renameCustomStore(D, user.id, l.name, name);
+    if (res !== 'ok') return json({ error: res }, res === 'exists' ? 409 : 400);
+    return json(await shopView(l.id));
   }
   if (path === '/api/shopping/lists/delete' && post) {
     const l = await db.getShoppingList(D, user.id, intOr(body.id));
     if (!l) return json({ error: 'not_found' }, 404);
-    await db.deleteShoppingList(D, user.id, l.id);
+    const res = await db.removeFavoriteStore(D, user.id, l.name);
+    if (!res.ok) return json({ error: res.error, count: res.count, name: res.name }, 409);
     return json(await shopView('all'));
   }
 

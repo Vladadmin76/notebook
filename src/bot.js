@@ -167,16 +167,21 @@ export function createBot(env) {
     const names = [...entries.filter((e) => fav.has(e.name.toLowerCase())), ...entries.filter((e) => !fav.has(e.name.toLowerCase()))].map((e) => e.name);
     return { rows, entries, names };
   }
-  // Название магазина → каноническое (и запоминаем новое написание)
+  // Название магазина → каноническое. Магазин сам попадает в избранные, и у него появляется список покупок
+  // (названия магазинов у нас живут только через избранное). Новое написание запоминается.
   async function canonicalStore(userId, ctx, input) {
     const m = resolveStore(input, ctx.entries);
-    if (!m) return { name: input, matched: false };
-    if (m.source !== 'list' && (m.how === 'sound' || m.how === 'fuzzy') && m.name.toLowerCase() !== String(input).trim().toLowerCase()) { // запоминаем только новые написания
+    if (m && m.source !== 'list' && (m.how === 'sound' || m.how === 'fuzzy') && m.name.toLowerCase() !== String(input).trim().toLowerCase()) {
       if (await db.learnStoreAlias(D, userId, m.name, input, MAX_ALIASES)) {
         const row = ctx.entries.find((e) => e.name === m.name); if (row) row.aliases.push(input.trim());
       }
     }
-    return { name: m.name, matched: true };
+    const name = m ? m.name : String(input).trim();
+    let entry = ctx.entries.find((e) => e.name.toLowerCase() === name.toLowerCase());
+    const becameFavorite = !entry || !entry.favorite;
+    const fav = await db.addFavoriteStore(D, userId, name, { custom: m ? m.source !== 'catalog' : true });
+    if (!entry) { entry = { name: fav.name, aliases: [], source: 'custom', favorite: true }; ctx.entries.push(entry); } else entry.favorite = true;
+    return { name: fav.name, matched: !!m, becameFavorite, list: fav.list };
   }
 
   // ---------- списки покупок по магазинам ----------
@@ -218,8 +223,8 @@ export function createBot(env) {
       if (/^без магазина$/i.test(q)) key = 'none';
       else {
         const sc = await storeContext(ctx.user.id);
-        const canon = (await canonicalStore(ctx.user.id, sc, q)).name;
-        const l = await db.findShoppingList(D, ctx.user.id, canon);
+        const m = resolveStore(q, sc.entries); // только узнаём название, ничего не создаём
+        const l = await db.findShoppingList(D, ctx.user.id, m ? m.name : q);
         if (l) key = l.id; else note = `Списка «${q}» нет. Показываю все покупки.\n`;
       }
     }
@@ -327,15 +332,18 @@ export function createBot(env) {
 
     // Покупки: магазин из фразы определяет список (новый магазин создаётся сам), без магазина идёт в «Без магазина»
     let addedItems = [], existingItems = [];
+    const newFavorites = [];
     if (shopping.length) {
       const ids = new Map();
       const withLists = [];
       for (const it of shopping) {
         let listId = null;
         if (it.store) {
-          it.store = (await canonicalStore(ctx.user.id, sc, it.store)).name; // «Костко» → Costco
+          const cs = await canonicalStore(ctx.user.id, sc, it.store); // «Костко» → Costco, магазин попадает в избранные
+          it.store = cs.name;
+          if (cs.becameFavorite && !newFavorites.includes(cs.name)) newFavorites.push(cs.name);
           const k = it.store.toLowerCase();
-          if (!ids.has(k)) ids.set(k, await db.getOrCreateShoppingList(D, ctx.user.id, it.store));
+          if (!ids.has(k)) ids.set(k, cs.list);
           listId = ids.get(k).id;
         }
         withLists.push({ name: it.name, listId, store: it.store ? ids.get(it.store.toLowerCase()).name : null });
@@ -358,6 +366,7 @@ export function createBot(env) {
       const lines = [];
       if (addedItems.length) lines.push(`🛒 Добавил в список покупок. ${escapeHtml(group(addedItems))}`);
       if (existingItems.length) lines.push(`Уже в списке: ${escapeHtml(existingItems.map((i) => i.name).join(', '))}`);
+      if (newFavorites.length) lines.push(`⭐ В избранные магазины добавлен: ${escapeHtml(newFavorites.join(', '))}`);
       await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: 'Открыть список', callback_data: 'sl' }]] } });
     }
   }
