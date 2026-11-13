@@ -216,6 +216,7 @@ async function screenMaps() {
   };
 }
 
+// ---------- Общее для дерева и доски: библиотека дерева, цвета окошек, выбор цвета ----------
 const ME = window.MindElixir && (MindElixir.default || MindElixir); // класс карты (библиотека отдаёт его как default)
 const MAP_COLORS = ['#e5484d', '#f08a24', '#f5c518', '#30a46c', '#12a594', '#3e63dd', '#8e4ec6', '#e93d82', '#8b8d98', '#ffffff', '#1b1f24'];
 // Цвет текста подбирается под фон: на светлом чёрный, на тёмном белый
@@ -246,6 +247,7 @@ const pickColor = () => new Promise((resolve) => {
   m.querySelector('#swReset').onclick = () => done('');
 });
 
+// ---------- Выбор вида новой карты: доска или дерево ----------
 function chooseMapKind() {
   const m = document.createElement('div'); m.className = 'modal';
   m.innerHTML = `<div class="sheet"><h3>Новая карта</h3><div class="btnrow col">
@@ -258,6 +260,7 @@ function chooseMapKind() {
   m.querySelector('#kTree').onclick = () => { m.remove(); show(() => screenMapEditor(null)); };
 }
 
+// ---------- Дерево: ветки раскладываются сами ----------
 async function screenMapEditor(mapId) {
   h(`${subHeader('Карта', '<span class="muted" id="mapState"></span>')}<div id="mapbox"></div><div class="mapbar" id="mapbar" hidden></div>`);
   bindBack();

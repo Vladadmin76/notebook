@@ -50,7 +50,7 @@ cron-job.org ─(раз в минуту)▶ /cron/tick ├─▶ Cloudflare Work
 | `src/stores.js` | перечень магазинов и узнавание названий по звучанию |
 | `src/config.js` | настройки: лимиты, стартовые папки, час напоминания о «Входящих» |
 | `public/` | приложение (чистый HTML, CSS, JS без фреймворков) |
-| `scripts/*.mjs` | сквозные проверки на запущенном `npm run dev`: защита и изоляция (`check:isolation`), корзина (`check:trash`), магазины (`check:stores`) |
+| `scripts/*.mjs` | сквозные проверки на запущенном `npm run dev`: защита и изоляция (`check:isolation`), корзина (`check:trash`), магазины (`check:stores`), карты в браузере с касаниями (`check:maps`, нужен playwright) |
 | `test/` | автотесты логики (`npm test`) |
 
 ## Развёртывание с нуля

@@ -11,7 +11,8 @@
     "test": "node --test test/auth.test.js test/deepseek.test.js test/timeutil.test.js test/ics.test.js test/reminders.test.js test/stores.test.js test/maps.test.js",
     "check:isolation": "node scripts/isolation-check.mjs",
     "check:trash": "node scripts/trash-check.mjs",
-    "check:stores": "node scripts/stores-check.mjs"
+    "check:stores": "node scripts/stores-check.mjs",
+    "check:maps": "node scripts/maps-browser-check.mjs"
   },
   "dependencies": {
     "grammy": "^1.46.0",
