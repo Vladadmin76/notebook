@@ -91,7 +91,10 @@ function syncBack() {
   if (tg && tg.BackButton) { if (hist.length) tg.BackButton.show(); else tg.BackButton.hide(); }
 }
 let mapFlush = null; // сохранение карты при уходе с её экрана
-const leaveMap = () => { if (mapFlush) { const f = mapFlush; mapFlush = null; f(); } };
+// На экранах карт Telegram не должен считать движение пальца вниз «свернуть приложение»
+const swipes = (on) => { try { if (tg) { if (on && tg.enableVerticalSwipes) tg.enableVerticalSwipes(); if (!on && tg.disableVerticalSwipes) tg.disableVerticalSwipes(); } } catch {} };
+const noScroll = (el) => el.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+const leaveMap = () => { swipes(true); if (mapFlush) { const f = mapFlush; mapFlush = null; f(); } };
 function show(fn) { leaveMap(); if (current) hist.push(current); current = fn; app.onclick = null; fn(); window.scrollTo(0, 0); syncBack(); }
 function back() { leaveMap(); const f = hist.pop(); if (f) { current = f; app.onclick = null; f(); window.scrollTo(0, 0); } syncBack(); }
 function tab(fn) { leaveMap(); hist.length = 0; current = fn; app.onclick = null; fn(); window.scrollTo(0, 0); syncBack(); }
@@ -228,7 +231,9 @@ async function screenMapEditor(mapId) {
     if (r.data.kind === 'board') return screenBoard(mapId, r.data.data);
     data = r.data.data;
   }
+  swipes(false);
   const box = $('mapbox'), bar = $('mapbar'), state = $('mapState');
+  noScroll(box);
   let mind = null, timer = null, saving = Promise.resolve(), dirty = false;
 
   const save = async () => {
@@ -326,6 +331,7 @@ async function screenBoard(mapId, saved) {
   h(`${subHeader('Доска', '<span class="muted" id="mapState"></span>')}<div id="bbox"><div id="bworld"><svg id="bsvg" width="1" height="1"></svg><div id="bnodes"></div></div></div>
     <div class="mapbar" id="mapbar"></div>`);
   bindBack();
+  swipes(false);
   const box = $('bbox'), world = $('bworld'), svg = $('bsvg'), layer = $('bnodes'), bar = $('mapbar'), state = $('mapState');
   let nodes = saved ? saved.nodes : [], edges = saved ? saved.edges : [];
   let sel = null, tx = 0, ty = 0, sc = 1, dirty = false, timer = null, saving = Promise.resolve();
@@ -493,6 +499,7 @@ async function screenBoard(mapId, saved) {
   box.addEventListener('pointercancel', finish);
   box.addEventListener('wheel', (e) => { e.preventDefault(); const r = box.getBoundingClientRect(); const ns = Math.min(3, Math.max(0.25, sc * (e.deltaY < 0 ? 1.1 : 0.9))); const wx = (e.clientX - r.left - tx) / sc, wy = (e.clientY - r.top - ty) / sc; sc = ns; tx = e.clientX - r.left - wx * ns; ty = e.clientY - r.top - wy * ns; applyView(); }, { passive: false });
   box.oncontextmenu = (e) => e.preventDefault();
+  noScroll(box);
 
   // ---- меню линии: вставить окошко в середину или удалить линию ----
   function edgeMenu(from, to) {

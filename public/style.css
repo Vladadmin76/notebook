@@ -182,3 +182,4 @@ button.star.on { color: #e0a800; }
 .btnrow.col { flex-direction: column; gap: 8px; }
 .btnrow.col button { width: 100%; margin: 0; }
 .btnrow.col small { opacity: .75; font-weight: 400; }
+html:has(#bbox), html:has(#mapbox) { overscroll-behavior: none; } body:has(#bbox), body:has(#mapbox) { overflow: hidden; position: fixed; inset: 0; width: 100%; }
