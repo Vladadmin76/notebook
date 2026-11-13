@@ -21,7 +21,10 @@ const OUT = require('os').tmpdir() + '/';
   await page.waitForSelector('#newMap'); await page.tap('#newMap');
   await page.tap('#kBoard'); await page.waitForSelector('#mapPlusB'); await page.tap('#mapPlusB');
   await page.fill('#askIn','Идея'); await page.tap('#askYes'); await page.waitForSelector('.bnode');
-  await page.tap('.bnode'); await page.tap('#bColor'); await page.waitForTimeout(300);
+  { const cdp = await ctx.newCDPSession(page); const r = await page.locator('.bnode').first().boundingBox(); const x = r.x + r.width/2, y = r.y + r.height/2;
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y,id:1}]}); await page.waitForTimeout(750); await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]}); await page.waitForTimeout(650); }
+  console.log('MENU items', await page.evaluate(()=>[...document.querySelectorAll('.modal button')].map(b=>b.textContent).join('|')));
+  await page.tap('#nColor'); await page.waitForTimeout(300);
   console.log('DBG', await page.evaluate(()=>[document.querySelector('.modal')?.outerHTML.slice(0,200), document.querySelector('.toast')?.textContent, typeof pickColor]));
   console.log('SWATCHES', await page.evaluate(()=>document.querySelectorAll('.sw').length));
   await page.tap('.sw[data-c="#e5484d"]'); await page.waitForTimeout(500);

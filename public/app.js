@@ -468,6 +468,8 @@ async function screenBoard(mapId, saved) {
     if (nodeEl) {
       const n = byId(nodeEl.dataset.id); sel = n.id; layer.querySelectorAll('.bnode').forEach((x) => x.classList.toggle('sel', x === nodeEl));
       mode = 'node'; drag = { id: n.id, sx: e.clientX, sy: e.clientY, ox: n.x, oy: n.y, moved: false, target: null };
+      const nid = n.id; // удержание окошка без движения открывает меню окошка
+      hold = setTimeout(() => { if (mode === 'node' && drag && !drag.moved) { mode = null; drag = null; render(); nodeMenu(nid); } }, 500);
     } else if (edgeEl) {
       mode = 'edge'; const from = edgeEl.dataset.from, to = edgeEl.dataset.to;
       pan = { sx: e.clientX, sy: e.clientY, moved: false };
@@ -570,29 +572,43 @@ async function screenBoard(mapId, saved) {
   };
   box.insertAdjacentHTML('beforeend', '<button id="mapPlusB" class="mapplus" aria-label="Добавить мысль">+</button>');
   $('mapPlusB').onclick = addFirst;
-  bar.innerHTML = '<button id="bUndo" aria-label="Отменить">↩</button><button id="bRedo" aria-label="Вернуть">↪</button><button id="bChild">＋ Ветка</button><button id="bEdit" aria-label="Изменить">✎</button><button id="bColor" aria-label="Цвет">🎨</button><button id="bFit" aria-label="Вписать">⤢</button><button id="bDel" class="danger" aria-label="Удалить">🗑</button>';
-  bar.onclick = async (e) => {
+  bar.innerHTML = '<button id="bUndo" aria-label="Отменить">↩</button><button id="bRedo" aria-label="Вернуть">↪</button><button id="bFit" aria-label="Вписать">⤢</button>';
+  bar.onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;
-    const n = sel && byId(sel);
     if (b.id === 'bUndo') { if (!undo.length) return; redo.push(snapshot()); restore(undo.pop()); render(); return changed(); }
     if (b.id === 'bRedo') { if (!redo.length) return; undo.push(snapshot()); restore(redo.pop()); render(); return changed(); }
     if (b.id === 'bFit') return center();
-    if (!n) return toast('Сначала нажмите на окошко');
-    if (b.id === 'bChild') {
-      const t = await askText('Новая ветка', '', 200); if (!t) return;
-      checkpoint(); const pos = placeChild(n); const id = rid();
-      nodes.push({ id, topic: t, ...pos }); edges.push({ from: n.id, to: id }); sel = id; render(); changed();
-    } else if (b.id === 'bEdit') {
-      const t = await askText('Текст окошка', n.topic, 200); if (!t) return;
-      checkpoint(); n.topic = t; render(); changed();
-    } else if (b.id === 'bColor') {
-      const c = await pickColor(); if (c === null) return;
-      checkpoint(); if (c) n.color = c; else delete n.color; render(); changed();
-    } else if (b.id === 'bDel') {
-      if (!(await confirmBox('Удалить это окошко и его линии?'))) return;
-      checkpoint(); nodes = nodes.filter((q) => q.id !== n.id); edges = edges.filter((q) => q.from !== n.id && q.to !== n.id); sel = null; render(); changed();
-    }
   };
+
+  // ---- меню окошка (удержание): название, ветка, цвет, удалить ----
+  function nodeMenu(id) {
+    const n = byId(id); if (!n) return;
+    sel = id; render();
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = `<div class="sheet"><h3>${esc(n.topic.length > 40 ? n.topic.slice(0, 40) + '…' : n.topic) || 'Окошко'}</h3><div class="btnrow col">
+      <button id="nEdit">Изменить название</button><button class="ghost" id="nChild">Добавить ветку</button><button class="ghost" id="nColor">Изменить цвет</button>
+      <button class="ghost danger" id="nDel">Удалить окошко</button><button class="ghost" id="nNo">Отмена</button></div></div>`;
+    document.body.appendChild(m);
+    m.style.pointerEvents = 'none'; setTimeout(() => { m.style.pointerEvents = ''; }, 500); // палец ещё лежит на экране
+    m.querySelector('#nNo').onclick = () => m.remove();
+    m.querySelector('#nEdit').onclick = async () => {
+      m.remove(); const t = await askText('Текст окошка', n.topic, 200); if (!t) return;
+      checkpoint(); n.topic = t; render(); changed();
+    };
+    m.querySelector('#nChild').onclick = async () => {
+      m.remove(); const t = await askText('Новая ветка', '', 200); if (!t) return;
+      checkpoint(); const pos = placeChild(n); const nid = rid();
+      nodes.push({ id: nid, topic: t, ...pos }); edges.push({ from: n.id, to: nid }); sel = nid; render(); changed();
+    };
+    m.querySelector('#nColor').onclick = async () => {
+      m.remove(); const c = await pickColor(); if (c === null) return;
+      checkpoint(); if (c) n.color = c; else delete n.color; render(); changed();
+    };
+    m.querySelector('#nDel').onclick = async () => {
+      m.remove(); if (!(await confirmBox('Удалить это окошко и его линии?'))) return;
+      checkpoint(); nodes = nodes.filter((q) => q.id !== n.id); edges = edges.filter((q) => q.from !== n.id && q.to !== n.id); sel = null; render(); changed();
+    };
+  }
   render(); center();
   setTimeout(() => { render(); if (saved) center(); }, 80); // размеры окошек известны после показа шрифтов
 }
