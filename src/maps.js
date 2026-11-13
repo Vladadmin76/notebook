@@ -54,6 +54,7 @@ export function cleanBoard(raw) {
     if (!e || !ids.has(e.from) || !ids.has(e.to) || e.from === e.to) return null;
     const k = e.from + '>' + e.to;
     if (seen.has(k)) continue;
+    if (seen.has(e.to + '>' + e.from)) return null; // между двумя окошками только одна линия
     seen.add(k);
     edges.push({ from: e.from, to: e.to });
   }

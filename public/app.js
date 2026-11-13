@@ -419,12 +419,6 @@ async function screenBoard(mapId, saved) {
     }
     return { x: rp.x + rp.w + 70, y: rp.y + 80 };
   };
-  const reaches = (from, to) => { // есть ли путь по линиям от from к to
-    const seen = new Set(); const st = [from];
-    while (st.length) { const c = st.pop(); if (c === to) return true; if (seen.has(c)) continue; seen.add(c); for (const e of edges) if (e.from === c) st.push(e.to); }
-    return false;
-  };
-
   // ---- жесты: тянуть окошко, двигать доску, щипок, удержание линии ----
   const ptr = new Map();
   let mode = null, drag = null, pan = null, pinch = null, hold = null;
@@ -483,16 +477,18 @@ async function screenBoard(mapId, saved) {
       if (!d.moved) return render(); // просто нажатие: окошко выбрано
       if (d.target) {
         const t = byId(d.target);
-        if (reaches(n.id, t.id) || reaches(t.id, n.id)) { n.x = d.ox; n.y = d.oy; render(); return toast('Нельзя склеить с тем, что идёт из него дальше'); }
         const text = await askText('Общий текст для двух окошек', t.topic, 200);
         n.x = d.ox; n.y = d.oy;
         if (text === null) return render(); // отмена: окошко возвращается на место
         checkpoint();
         t.topic = text; if (!t.color && n.color) t.color = n.color;
+        // линии у склеенного окошка: сначала те, что были у «принимающего», затем у перетащенного; между парой всегда одна линия
         const seen = new Set(); const ne = [];
-        for (const ed of edges) {
-          const f = ed.from === n.id ? t.id : ed.from, to = ed.to === n.id ? t.id : ed.to;
-          if (f === to || seen.has(f + '>' + to)) continue; seen.add(f + '>' + to); ne.push({ from: f, to });
+        const remap = (id) => (id === n.id ? t.id : id);
+        for (const ed of [...edges.filter((q) => q.from !== n.id && q.to !== n.id), ...edges.filter((q) => q.from === n.id || q.to === n.id)]) {
+          const f = remap(ed.from), to = remap(ed.to);
+          if (f === to || seen.has(f + '>' + to) || seen.has(to + '>' + f)) continue;
+          seen.add(f + '>' + to); ne.push({ from: f, to });
         }
         edges = ne; nodes = nodes.filter((q) => q.id !== n.id); sel = t.id;
         render(); return changed();
@@ -511,11 +507,12 @@ async function screenBoard(mapId, saved) {
   // ---- меню линии: вставить окошко в середину или удалить линию ----
   function edgeMenu(from, to) {
     const m = document.createElement('div'); m.className = 'modal';
-    m.innerHTML = '<div class="sheet"><h3>Линия</h3><div class="btnrow col"><button id="eIns">Вставить окошко</button><button class="ghost" id="eDel">Удалить линию</button><button class="ghost" id="eNo">Отмена</button></div></div>';
+    m.innerHTML = '<div class="sheet"><h3>Линия</h3><div class="btnrow col"><button id="eIns">Вставить окошко</button><button class="ghost" id="eRev">Развернуть стрелку</button><button class="ghost" id="eDel">Удалить линию</button><button class="ghost" id="eNo">Отмена</button></div></div>';
     document.body.appendChild(m);
     m.style.pointerEvents = 'none'; setTimeout(() => { m.style.pointerEvents = ''; }, 500); // палец ещё лежит на экране: случайное отпускание не должно нажать кнопку
     m.querySelector('#eNo').onclick = () => m.remove();
     m.querySelector('#eDel').onclick = () => { m.remove(); checkpoint(); edges = edges.filter((e) => !(e.from === from && e.to === to)); render(); changed(); };
+    m.querySelector('#eRev').onclick = () => { m.remove(); checkpoint(); edges = edges.map((e) => (e.from === from && e.to === to ? { from: to, to: from } : e)); render(); changed(); };
     m.querySelector('#eIns').onclick = async () => {
       m.remove();
       const t = await askText('Новое окошко между ними', '', 200);

@@ -202,6 +202,7 @@ check('правка чужой доски: 404', (await call(Bd, '/api/maps/save
 check('доску нельзя подменить деревом: 404', (await call(A, '/api/maps/save', { id: BID, tree: { id: 'x', topic: 'x' } })).status === 404);
 check('доска хранит окошки и линии', await (async () => { const g = (await call(A, `/api/maps/get?id=${BID}`)).data; return g.kind === 'board' && g.data.nodes.length === 2 && g.data.edges.length === 1; })());
 check('линия на несуществующее окошко отклоняется: 400', (await call(A, '/api/maps/save', { id: BID, board: { nodes: [{ id: 'a', x: 0, y: 0, topic: '' }], edges: [{ from: 'a', to: 'zz' }] } })).status === 400);
+check('две линии между парой «туда и обратно»: 400', (await call(A, '/api/maps/save', { id: BID, board: { nodes: [{ id: 'a', x: 0, y: 0, topic: '' }, { id: 'b', x: 1, y: 1, topic: '' }], edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'a' }] } })).status === 400);
 await call(A, '/api/maps/delete', { id: BID });
 check('карта без правильных id отклоняется: 400', (await call(A, '/api/maps/save', { id: MID, tree: { id: '<b>', topic: 'x' } })).status === 400);
 

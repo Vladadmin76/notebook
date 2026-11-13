@@ -28,3 +28,8 @@ test('доска: название берётся с первого окошка
   assert.equal(titleOf(cleanBoard({ nodes: [node('a', 0, 0, 'Машины')], edges: [] })), 'Машины');
   assert.equal(titleOf(cleanTree({ id: 'r', topic: 'Центр' })), 'Центр');
 });
+test('доска: две линии между парой (туда и обратно) не принимаются, круг из трёх допустим', () => {
+  assert.equal(cleanBoard({ nodes: [node('a'), node('b')], edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'a' }] }), null);
+  const ring = cleanBoard({ nodes: [node('a'), node('b'), node('c')], edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }, { from: 'c', to: 'a' }] });
+  assert.equal(ring.edges.length, 3);
+});
