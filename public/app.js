@@ -167,47 +167,54 @@ async function screenMaps() {
   frame('maps', '<div id="maplist"><p class="muted">Загрузка…</p></div>');
   const r = await api('/api/maps');
   if (!r.ok) return;
-  $('maplist').innerHTML = r.data.maps.map((m) => `<button class="row-card" data-map="${m.id}"><span>${m.kind === 'board' ? '🗺️' : '🧠'} ${esc(m.title || 'Без названия')}</span>
-      <span class="count">${esc(new Date(m.updated_at).toLocaleDateString('ru-RU', { timeZone: me.tz, day: 'numeric', month: 'short' }))}</span></button>`).join('')
+  const W = 96; // ширина кнопки «Удалить»
+  $('maplist').innerHTML = r.data.maps.map((m) => `<div class="swrow" data-map="${m.id}"><button class="swdel" data-del="${m.id}">Удалить</button>
+      <div class="row-card swface"><span>${m.kind === 'board' ? '🗺️' : '🧠'} ${esc(m.title || 'Без названия')}</span>
+      <span class="count">${esc(new Date(m.updated_at).toLocaleDateString('ru-RU', { timeZone: me.tz, day: 'numeric', month: 'short' }))}</span></div></div>`).join('')
     + `<button class="ghost wide" id="newMap">+ Новая карта</button>`
-    + (r.data.maps.length ? '' : '<p class="muted">Здесь будут ваши карты: центральная мысль и ветки от неё.</p>');
-  $('maplist').onclick = (e) => {
-    const b = e.target.closest('button');
-    if (!b) return;
-    if (b.dataset.map) show(() => screenMapEditor(Number(b.dataset.map)));
-    else if (b.id === 'newMap') chooseMapKind();
+    + (r.data.maps.length ? '<p class="muted">Чтобы удалить карту, сдвиньте её влево или удержите.</p>' : '<p class="muted">Здесь будут ваши карты.</p>');
+  const list = $('maplist');
+  let openRow = null;
+  const setOpen = (row, on) => { row.classList.toggle('open', on); row.firstElementChild.nextElementSibling.style.transform = on ? `translateX(-${W}px)` : ''; if (on) { if (openRow && openRow !== row) setOpen(openRow, false); openRow = row; } else if (openRow === row) openRow = null; };
+  // жесты строки: сдвиг влево или удержание открывают «Удалить»; обычное нажатие открывает карту
+  let g = null;
+  list.addEventListener('pointerdown', (e) => {
+    const face = e.target.closest('.swface'); if (!face) return;
+    const row = face.parentElement;
+    g = { row, face, sx: e.clientX, sy: e.clientY, base: row.classList.contains('open') ? -W : 0, moved: false, horiz: false, held: false, pid: e.pointerId };
+    g.timer = setTimeout(() => { if (g && !g.moved) { g.held = true; setOpen(g.row, true); } }, 500);
+  });
+  list.addEventListener('pointermove', (e) => {
+    if (!g || e.pointerId !== g.pid) return;
+    const dx = e.clientX - g.sx, dy = e.clientY - g.sy;
+    if (!g.moved && Math.hypot(dx, dy) > 8) { g.moved = true; clearTimeout(g.timer); g.horiz = Math.abs(dx) > Math.abs(dy); if (g.horiz) { try { list.setPointerCapture(e.pointerId); } catch {} g.face.style.transition = 'none'; g.row.classList.add('swiping'); } }
+    if (g.horiz) { const x = Math.max(-W, Math.min(0, g.base + dx)); g.face.style.transform = `translateX(${x}px)`; g.x = x; }
+  });
+  const end = (e) => {
+    if (!g || e.pointerId !== g.pid) return;
+    clearTimeout(g.timer);
+    const q = g; g = null; q.face.style.transition = '';
+    if (q.horiz) { setOpen(q.row, (q.x ?? 0) < -W / 2); setTimeout(() => q.row.classList.remove('swiping'), 260); }
+    else if (q.held) { /* удержание уже открыло кнопку, нажатие не засчитываем */ }
+    else if (!q.moved && e.type === 'pointerup') { // обычное нажатие
+      if (q.row.classList.contains('open')) setOpen(q.row, false);
+      else show(() => screenMapEditor(Number(q.row.dataset.map)));
+    }
+  };
+  list.addEventListener('pointerup', end);
+  list.addEventListener('pointercancel', end);
+  list.oncontextmenu = (e) => e.preventDefault();
+  list.onclick = async (e) => {
+    const d = e.target.closest('.swdel');
+    if (d) {
+      if (!(await confirmBox('Удалить эту карту навсегда? Вернуть её будет нельзя.'))) return;
+      const res = await api('/api/maps/delete', { id: Number(d.dataset.del) });
+      if (res.ok) { toast('Карта удалена'); return screenMaps(); }
+      return notify('Не удалось удалить. Попробуйте ещё раз.');
+    }
+    if (e.target.closest('#newMap')) chooseMapKind();
   };
 }
-
-const ME = window.MindElixir && (MindElixir.default || MindElixir); // класс карты (библиотека отдаёт его как default)
-const MAP_COLORS = ['#e5484d', '#f08a24', '#f5c518', '#30a46c', '#12a594', '#3e63dd', '#8e4ec6', '#e93d82', '#8b8d98', '#ffffff', '#1b1f24'];
-// Цвет текста подбирается под фон: на светлом чёрный, на тёмном белый
-const textOn = (hex) => {
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? '#1b1f24' : '#ffffff';
-};
-// Линия от окошка к следующим имеет цвет самого окошка; у бесцветного окошка линии обычные
-function normalizeBranches(node) {
-  let changed = false;
-  for (const c of node.children || []) {
-    const want = node.style && node.style.background;
-    if (want ? c.branchColor !== want : c.branchColor !== undefined) { changed = true; if (want) c.branchColor = want; else delete c.branchColor; }
-    if (normalizeBranches(c)) changed = true;
-  }
-  return changed;
-}
-const findNode = (node, id) => { if (node.id === id) return node; for (const c of node.children || []) { const f = findNode(c, id); if (f) return f; } return null; };
-const pickColor = () => new Promise((resolve) => {
-  const m = document.createElement('div');
-  m.className = 'modal';
-  m.innerHTML = `<div class="sheet"><h3>Цвет окошка</h3><div class="swatches">${MAP_COLORS.map((c) => `<button class="sw" data-c="${c}" style="background:${c}" aria-label="${c}"></button>`).join('')}</div>
-    <div class="btnrow"><button class="ghost mini" id="swNo">Отмена</button><button class="ghost mini" id="swReset">Без цвета</button></div></div>`;
-  document.body.appendChild(m);
-  const done = (v) => { m.remove(); resolve(v); };
-  m.onclick = (e) => { const b = e.target.closest('button'); if (b && b.dataset.c) done(b.dataset.c); };
-  m.querySelector('#swNo').onclick = () => done(null);
-  m.querySelector('#swReset').onclick = () => done('');
-});
 
 function chooseMapKind() {
   const m = document.createElement('div'); m.className = 'modal';
