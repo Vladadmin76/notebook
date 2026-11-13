@@ -114,15 +114,15 @@ export async function handleAppApi({ request, env, url, user, body }) {
   if (path === '/api/maps' && get) return json({ maps: await maps.listMaps(D, user.id) });
   if (path === '/api/maps/get' && get) {
     const m = await maps.getMap(D, user.id, intOr(url.searchParams.get('id')));
-    return m ? json({ id: m.id, data: JSON.parse(m.data) }) : json({ error: 'not_found' }, 404);
+    return m ? json({ id: m.id, kind: m.kind, data: JSON.parse(m.data) }) : json({ error: 'not_found' }, 404);
   }
   if (path === '/api/maps/create' && post) {
-    const tree = maps.cleanTree(body.tree);
+    const tree = body.board ? maps.cleanBoard(body.board) : maps.cleanTree(body.tree);
     if (!tree) return json({ error: 'bad_map' }, 400);
     return json({ id: await maps.createMap(D, user.id, tree, nowIso) });
   }
   if (path === '/api/maps/save' && post) {
-    const tree = maps.cleanTree(body.tree);
+    const tree = body.board ? maps.cleanBoard(body.board) : maps.cleanTree(body.tree);
     if (!tree) return json({ error: 'bad_map' }, 400);
     return (await maps.saveMap(D, user.id, intOr(body.id), tree, nowIso)) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
   }

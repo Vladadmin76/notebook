@@ -164,7 +164,7 @@ async function screenMaps() {
   frame('maps', '<div id="maplist"><p class="muted">Загрузка…</p></div>');
   const r = await api('/api/maps');
   if (!r.ok) return;
-  $('maplist').innerHTML = r.data.maps.map((m) => `<button class="row-card" data-map="${m.id}"><span>🧠 ${esc(m.title || 'Без названия')}</span>
+  $('maplist').innerHTML = r.data.maps.map((m) => `<button class="row-card" data-map="${m.id}"><span>${m.kind === 'board' ? '🗺️' : '🧠'} ${esc(m.title || 'Без названия')}</span>
       <span class="count">${esc(new Date(m.updated_at).toLocaleDateString('ru-RU', { timeZone: me.tz, day: 'numeric', month: 'short' }))}</span></button>`).join('')
     + `<button class="ghost wide" id="newMap">+ Новая карта</button>`
     + (r.data.maps.length ? '' : '<p class="muted">Здесь будут ваши карты: центральная мысль и ветки от неё.</p>');
@@ -172,7 +172,7 @@ async function screenMaps() {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.map) show(() => screenMapEditor(Number(b.dataset.map)));
-    else if (b.id === 'newMap') show(() => screenMapEditor(null));
+    else if (b.id === 'newMap') chooseMapKind();
   };
 }
 
@@ -206,6 +206,18 @@ const pickColor = () => new Promise((resolve) => {
   m.querySelector('#swReset').onclick = () => done('');
 });
 
+function chooseMapKind() {
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="sheet"><h3>Новая карта</h3><div class="btnrow col">
+    <button id="kBoard">🗺️ Доска<br><small>окошки двигаете пальцем, сводите вместе</small></button>
+    <button class="ghost" id="kTree">🧠 Дерево<br><small>ветки раскладываются сами</small></button>
+    <button class="ghost" id="kNo">Отмена</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#kNo').onclick = () => m.remove();
+  m.querySelector('#kBoard').onclick = () => { m.remove(); show(() => screenBoard(null, null)); };
+  m.querySelector('#kTree').onclick = () => { m.remove(); show(() => screenMapEditor(null)); };
+}
+
 async function screenMapEditor(mapId) {
   h(`${subHeader('Карта', '<span class="muted" id="mapState"></span>')}<div id="mapbox"></div><div class="mapbar" id="mapbar" hidden></div>`);
   bindBack();
@@ -213,6 +225,7 @@ async function screenMapEditor(mapId) {
   if (mapId) {
     const r = await api('/api/maps/get?id=' + mapId);
     if (!r.ok) { notify('Не удалось открыть карту.'); return back(); }
+    if (r.data.kind === 'board') return screenBoard(mapId, r.data.data);
     data = r.data.data;
   }
   const box = $('mapbox'), bar = $('mapbar'), state = $('mapState');
@@ -238,7 +251,7 @@ async function screenMapEditor(mapId) {
   const start = (tree) => {
     const dark = document.documentElement.dataset.theme === 'dark';
     box.innerHTML = '';
-    mind = new ME({ el: box, direction: ME.SIDE, toolBar: false, keypress: false, contextMenu: false, allowUndo: false, theme: dark ? ME.DARK_THEME : ME.THEME });
+    mind = new ME({ el: box, direction: ME.SIDE, toolBar: false, keypress: false, contextMenu: false, allowUndo: true, theme: dark ? ME.DARK_THEME : ME.THEME });
     mind.init(tree);
     mind.bus.addListener('operation', (op) => {
       if (op && op.name === 'moveNode') { const d = mind.getData(); if (normalizeBranches(d.nodeData)) { mind.refresh(d); } }
@@ -299,9 +312,245 @@ async function screenMapEditor(mapId) {
       mind.refresh(d);
       const again = ME.E(id); if (again) mind.selectNode(again);
       changed();
+    } else if (b.id === 'mapUndo' || b.id === 'mapRedo') {
+      try { if (b.id === 'mapUndo') mind.undo(); else mind.redo(); } catch {}
+      changed();
     } else if (b.id === 'mapFit') { try { mind.scale(1); mind.toCenter(); } catch {} }
   };
-  bar.innerHTML = '<button id="mapChild">＋ Ветка</button><button id="mapSibling">＋ Рядом</button><button id="mapEdit" aria-label="Изменить">✎</button><button id="mapColor" aria-label="Цвет">🎨</button><button id="mapFit" aria-label="Вписать">⤢</button><button id="mapDel" class="danger" aria-label="Удалить">🗑</button>';
+  bar.innerHTML = '<button id="mapUndo" aria-label="Отменить">↩</button><button id="mapRedo" aria-label="Вернуть">↪</button><button id="mapChild">＋ Ветка</button><button id="mapSibling">＋ Рядом</button><button id="mapEdit" aria-label="Изменить">✎</button><button id="mapColor" aria-label="Цвет">🎨</button><button id="mapFit" aria-label="Вписать">⤢</button><button id="mapDel" class="danger" aria-label="Удалить">🗑</button>';
+}
+
+// ---------- «Доска»: окошки ставит сам человек, линии идут от одного к другому ----------
+const rid = () => Math.random().toString(16).slice(2, 10) + Date.now().toString(16).slice(-6);
+async function screenBoard(mapId, saved) {
+  h(`${subHeader('Доска', '<span class="muted" id="mapState"></span>')}<div id="bbox"><div id="bworld"><svg id="bsvg" width="1" height="1"></svg><div id="bnodes"></div></div></div>
+    <div class="mapbar" id="mapbar"></div>`);
+  bindBack();
+  const box = $('bbox'), world = $('bworld'), svg = $('bsvg'), layer = $('bnodes'), bar = $('mapbar'), state = $('mapState');
+  let nodes = saved ? saved.nodes : [], edges = saved ? saved.edges : [];
+  let sel = null, tx = 0, ty = 0, sc = 1, dirty = false, timer = null, saving = Promise.resolve();
+  const undo = [], redo = [];
+  const size = {}; // id → {w, h}, измеряется после показа
+  const byId = (id) => nodes.find((n) => n.id === id);
+  const snapshot = () => JSON.stringify({ nodes, edges });
+  const restore = (j) => { const d = JSON.parse(j); nodes = d.nodes; edges = d.edges; if (sel && !byId(sel)) sel = null; };
+  const checkpoint = () => { undo.push(snapshot()); if (undo.length > 100) undo.shift(); redo.length = 0; };
+
+  const save = async () => {
+    clearTimeout(timer); timer = null;
+    if (!dirty || !nodes.length && !mapId) return;
+    dirty = false; state.textContent = '…';
+    const board = { nodes, edges };
+    saving = saving.then(async () => {
+      const r = mapId ? await api('/api/maps/save', { id: mapId, board }) : await api('/api/maps/create', { board });
+      if (r.ok && !mapId) mapId = r.data.id;
+      state.textContent = r.ok ? '✓' : '⚠️'; if (!r.ok) dirty = true;
+    });
+    await saving;
+  };
+  const changed = () => { dirty = true; state.textContent = ''; clearTimeout(timer); timer = setTimeout(save, 600); };
+  mapFlush = save;
+
+  const applyView = () => { world.style.transform = `translate(${tx}px, ${ty}px) scale(${sc})`; };
+  const toWorld = (cx, cy) => { const r = box.getBoundingClientRect(); return { x: (cx - r.left - tx) / sc, y: (cy - r.top - ty) / sc }; };
+  const rect = (n) => ({ x: n.x, y: n.y, w: (size[n.id] || { w: 120 }).w, h: (size[n.id] || { h: 40 }).h });
+
+  // линия: от стороны одного окошка к стороне другого, у конца стрелка; цвет берётся у окошка, из которого линия выходит
+  function drawEdges() {
+    const out = [];
+    for (const e of edges) {
+      const a = byId(e.from), b = byId(e.to);
+      if (!a || !b) continue;
+      const ra = rect(a), rb = rect(b);
+      const ca = { x: ra.x + ra.w / 2, y: ra.y + ra.h / 2 }, cb = { x: rb.x + rb.w / 2, y: rb.y + rb.h / 2 };
+      const horiz = Math.abs(cb.x - ca.x) >= Math.abs(cb.y - ca.y);
+      const sg = horiz ? Math.sign(cb.x - ca.x) || 1 : Math.sign(cb.y - ca.y) || 1;
+      const p1 = horiz ? { x: ca.x + sg * ra.w / 2, y: ca.y } : { x: ca.x, y: ca.y + sg * ra.h / 2 };
+      const p2 = horiz ? { x: cb.x - sg * rb.w / 2, y: cb.y } : { x: cb.x, y: cb.y - sg * rb.h / 2 };
+      const d = Math.max(40, (horiz ? Math.abs(p2.x - p1.x) : Math.abs(p2.y - p1.y)) / 2);
+      const c1 = horiz ? { x: p1.x + sg * d, y: p1.y } : { x: p1.x, y: p1.y + sg * d };
+      const c2 = horiz ? { x: p2.x - sg * d, y: p2.y } : { x: p2.x, y: p2.y - sg * d };
+      const path = `M${p1.x},${p1.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${p2.x},${p2.y}`;
+      const col = a.color || '#8b8d98';
+      const ah = horiz ? `${p2.x},${p2.y} ${p2.x - sg * 12},${p2.y - 6} ${p2.x - sg * 12},${p2.y + 6}` : `${p2.x},${p2.y} ${p2.x - 6},${p2.y - sg * 12} ${p2.x + 6},${p2.y - sg * 12}`;
+      out.push(`<g class="bedge" data-from="${e.from}" data-to="${e.to}"><path d="${path}" fill="none" stroke="${col}" stroke-width="3"/><polygon points="${ah}" fill="${col}"/>
+        <path class="hit" d="${path}" fill="none" stroke="transparent" stroke-width="26"/></g>`);
+    }
+    svg.innerHTML = out.join('');
+  }
+  function drawNodes() {
+    layer.innerHTML = nodes.map((n) => `<div class="bnode ${n.id === sel ? 'sel' : ''}" data-id="${n.id}" style="left:${n.x}px;top:${n.y}px;${n.color ? `background:${n.color};color:${textOn(n.color)};border-color:${n.color}` : ''}">${esc(n.topic) || '&nbsp;'}</div>`).join('');
+    for (const el of layer.children) size[el.dataset.id] = { w: el.offsetWidth, h: el.offsetHeight };
+  }
+  const render = () => {
+    drawNodes(); drawEdges();
+    $('mapPlusB').hidden = nodes.length > 0;
+    bar.hidden = nodes.length === 0;
+  };
+  const center = () => {
+    const r = box.getBoundingClientRect();
+    if (!nodes.length) { tx = r.width / 2; ty = r.height / 2; sc = 1; return applyView(); }
+    const xs = nodes.map((n) => rect(n)), x0 = Math.min(...xs.map((q) => q.x)), x1 = Math.max(...xs.map((q) => q.x + q.w));
+    const y0 = Math.min(...xs.map((q) => q.y)), y1 = Math.max(...xs.map((q) => q.y + q.h));
+    sc = Math.min(1, (r.width - 40) / (x1 - x0), (r.height - 40) / (y1 - y0));
+    tx = r.width / 2 - ((x0 + x1) / 2) * sc; ty = r.height / 2 - ((y0 + y1) / 2) * sc; applyView();
+  };
+
+  // свободное место для нового окошка: справа от родителя, ниже уже стоящих рядом
+  const hits = (x, y, w, h) => nodes.some((n) => { const r = rect(n); return x < r.x + r.w + 16 && x + w + 16 > r.x && y < r.y + r.h + 12 && y + h + 12 > r.y; });
+  const placeChild = (p) => {
+    const rp = rect(p); const w = 140, h = 44;
+    for (let i = 0; i < 60; i++) {
+      const x = rp.x + rp.w + 70, y = rp.y + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (h + 16) * (i ? 1 : 0);
+      if (!hits(x, y, w, h)) return { x, y };
+    }
+    return { x: rp.x + rp.w + 70, y: rp.y + 80 };
+  };
+  const reaches = (from, to) => { // есть ли путь по линиям от from к to
+    const seen = new Set(); const st = [from];
+    while (st.length) { const c = st.pop(); if (c === to) return true; if (seen.has(c)) continue; seen.add(c); for (const e of edges) if (e.from === c) st.push(e.to); }
+    return false;
+  };
+
+  // ---- жесты: тянуть окошко, двигать доску, щипок, удержание линии ----
+  const ptr = new Map();
+  let mode = null, drag = null, pan = null, pinch = null, hold = null;
+  box.addEventListener('pointerdown', (e) => {
+    box.setPointerCapture(e.pointerId);
+    ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptr.size === 2) { // два пальца: масштаб; начатое перетаскивание отменяется
+      if (drag) { const n = byId(drag.id); n.x = drag.ox; n.y = drag.oy; drag = null; render(); }
+      clearTimeout(hold); mode = 'pinch';
+      const [a, b] = [...ptr.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), sc, tx, ty, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
+      return;
+    }
+    const nodeEl = e.target.closest('.bnode'), edgeEl = e.target.closest('.bedge');
+    if (nodeEl) {
+      const n = byId(nodeEl.dataset.id); sel = n.id; layer.querySelectorAll('.bnode').forEach((x) => x.classList.toggle('sel', x === nodeEl));
+      mode = 'node'; drag = { id: n.id, sx: e.clientX, sy: e.clientY, ox: n.x, oy: n.y, moved: false, target: null };
+    } else if (edgeEl) {
+      mode = 'edge'; const from = edgeEl.dataset.from, to = edgeEl.dataset.to;
+      pan = { sx: e.clientX, sy: e.clientY, moved: false };
+      hold = setTimeout(() => { if (mode === 'edge' && !pan.moved) { mode = null; edgeMenu(from, to); } }, 500);
+    } else {
+      mode = 'pan'; pan = { sx: e.clientX, sy: e.clientY, tx, ty, moved: false };
+    }
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (ptr.has(e.pointerId)) ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'pinch' && ptr.size >= 2 && pinch) {
+      const [a, b] = [...ptr.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const ns = Math.min(3, Math.max(0.25, pinch.sc * d / pinch.d)); const r = box.getBoundingClientRect();
+      const wx = (pinch.cx - r.left - pinch.tx) / pinch.sc, wy = (pinch.cy - r.top - pinch.ty) / pinch.sc;
+      sc = ns; tx = pinch.cx - r.left - wx * ns + ((a.x + b.x) / 2 - pinch.cx); ty = pinch.cy - r.top - wy * ns + ((a.y + b.y) / 2 - pinch.cy); applyView();
+    } else if (mode === 'node' && drag) {
+      const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+      if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+      drag.moved = true;
+      const n = byId(drag.id); n.x = Math.round(drag.ox + dx / sc); n.y = Math.round(drag.oy + dy / sc);
+      const el = layer.querySelector(`[data-id="${n.id}"]`); el.style.left = n.x + 'px'; el.style.top = n.y + 'px'; el.classList.add('dragging');
+      // над каким окошком находится палец: оно подсвечивается как «сюда склеить»
+      const w = toWorld(e.clientX, e.clientY);
+      drag.target = nodes.find((o) => { if (o.id === n.id) return false; const r = rect(o); return w.x >= r.x && w.x <= r.x + r.w && w.y >= r.y && w.y <= r.y + r.h; })?.id || null;
+      layer.querySelectorAll('.bnode').forEach((x) => x.classList.toggle('drop', x.dataset.id === drag.target));
+      drawEdges();
+    } else if ((mode === 'pan' || mode === 'edge') && pan) {
+      const dx = e.clientX - pan.sx, dy = e.clientY - pan.sy;
+      if (Math.hypot(dx, dy) > 8) pan.moved = true;
+      if (mode === 'pan' && pan.moved) { tx = pan.tx + dx; ty = pan.ty + dy; applyView(); }
+    }
+  });
+  const finish = async (e) => {
+    ptr.delete(e.pointerId);
+    clearTimeout(hold);
+    if (mode === 'pinch') { if (ptr.size < 2) { mode = null; pinch = null; } return; }
+    const m = mode, d = drag; mode = null; drag = null;
+    if (m === 'node' && d) {
+      const n = byId(d.id);
+      if (!d.moved) return render(); // просто нажатие: окошко выбрано
+      if (d.target) {
+        const t = byId(d.target);
+        if (reaches(n.id, t.id) || reaches(t.id, n.id)) { n.x = d.ox; n.y = d.oy; render(); return toast('Нельзя склеить с тем, что идёт из него дальше'); }
+        const text = await askText('Общий текст для двух окошек', t.topic, 200);
+        n.x = d.ox; n.y = d.oy;
+        if (text === null) return render(); // отмена: окошко возвращается на место
+        checkpoint();
+        t.topic = text; if (!t.color && n.color) t.color = n.color;
+        const seen = new Set(); const ne = [];
+        for (const ed of edges) {
+          const f = ed.from === n.id ? t.id : ed.from, to = ed.to === n.id ? t.id : ed.to;
+          if (f === to || seen.has(f + '>' + to)) continue; seen.add(f + '>' + to); ne.push({ from: f, to });
+        }
+        edges = ne; nodes = nodes.filter((q) => q.id !== n.id); sel = t.id;
+        render(); return changed();
+      }
+      // обычное перемещение: в историю кладём состояние до перемещения
+      const nx = n.x, ny = n.y; n.x = d.ox; n.y = d.oy; checkpoint(); n.x = nx; n.y = ny;
+      render(); return changed();
+    }
+  };
+  box.addEventListener('pointerup', finish);
+  box.addEventListener('pointercancel', finish);
+  box.addEventListener('wheel', (e) => { e.preventDefault(); const r = box.getBoundingClientRect(); const ns = Math.min(3, Math.max(0.25, sc * (e.deltaY < 0 ? 1.1 : 0.9))); const wx = (e.clientX - r.left - tx) / sc, wy = (e.clientY - r.top - ty) / sc; sc = ns; tx = e.clientX - r.left - wx * ns; ty = e.clientY - r.top - wy * ns; applyView(); }, { passive: false });
+  box.oncontextmenu = (e) => e.preventDefault();
+
+  // ---- меню линии: вставить окошко в середину или удалить линию ----
+  function edgeMenu(from, to) {
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = '<div class="sheet"><h3>Линия</h3><div class="btnrow col"><button id="eIns">Вставить окошко</button><button class="ghost" id="eDel">Удалить линию</button><button class="ghost" id="eNo">Отмена</button></div></div>';
+    document.body.appendChild(m);
+    m.style.pointerEvents = 'none'; setTimeout(() => { m.style.pointerEvents = ''; }, 500); // палец ещё лежит на экране: случайное отпускание не должно нажать кнопку
+    m.querySelector('#eNo').onclick = () => m.remove();
+    m.querySelector('#eDel').onclick = () => { m.remove(); checkpoint(); edges = edges.filter((e) => !(e.from === from && e.to === to)); render(); changed(); };
+    m.querySelector('#eIns').onclick = async () => {
+      m.remove();
+      const t = await askText('Новое окошко между ними', '', 200);
+      if (!t) return;
+      const a = byId(from), b = byId(to); if (!a || !b) return;
+      checkpoint();
+      const ra = rect(a), rb = rect(b);
+      const id = rid(); const w = 140, hh = 44;
+      nodes.push({ id, topic: t, x: Math.round((ra.x + ra.w / 2 + rb.x + rb.w / 2) / 2 - w / 2), y: Math.round((ra.y + ra.h / 2 + rb.y + rb.h / 2) / 2 - hh / 2) });
+      edges = edges.filter((e) => !(e.from === from && e.to === to)); edges.push({ from, to: id }, { from: id, to });
+      sel = id; render(); changed();
+    };
+  }
+
+  // ---- кнопки ----
+  const addFirst = async () => {
+    const t = await askText('Первая мысль', '', 200);
+    if (!t) return;
+    checkpoint();
+    const r = box.getBoundingClientRect(); const p = toWorld(r.left + r.width / 2, r.top + r.height / 2);
+    const id = rid(); nodes.push({ id, topic: t, x: Math.round(p.x - 60), y: Math.round(p.y - 22) }); sel = id; render(); changed();
+  };
+  box.insertAdjacentHTML('beforeend', '<button id="mapPlusB" class="mapplus" aria-label="Добавить мысль">+</button>');
+  $('mapPlusB').onclick = addFirst;
+  bar.innerHTML = '<button id="bUndo" aria-label="Отменить">↩</button><button id="bRedo" aria-label="Вернуть">↪</button><button id="bChild">＋ Ветка</button><button id="bEdit" aria-label="Изменить">✎</button><button id="bColor" aria-label="Цвет">🎨</button><button id="bFit" aria-label="Вписать">⤢</button><button id="bDel" class="danger" aria-label="Удалить">🗑</button>';
+  bar.onclick = async (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    const n = sel && byId(sel);
+    if (b.id === 'bUndo') { if (!undo.length) return; redo.push(snapshot()); restore(undo.pop()); render(); return changed(); }
+    if (b.id === 'bRedo') { if (!redo.length) return; undo.push(snapshot()); restore(redo.pop()); render(); return changed(); }
+    if (b.id === 'bFit') return center();
+    if (!n) return toast('Сначала нажмите на окошко');
+    if (b.id === 'bChild') {
+      const t = await askText('Новая ветка', '', 200); if (!t) return;
+      checkpoint(); const pos = placeChild(n); const id = rid();
+      nodes.push({ id, topic: t, ...pos }); edges.push({ from: n.id, to: id }); sel = id; render(); changed();
+    } else if (b.id === 'bEdit') {
+      const t = await askText('Текст окошка', n.topic, 200); if (!t) return;
+      checkpoint(); n.topic = t; render(); changed();
+    } else if (b.id === 'bColor') {
+      const c = await pickColor(); if (c === null) return;
+      checkpoint(); if (c) n.color = c; else delete n.color; render(); changed();
+    } else if (b.id === 'bDel') {
+      if (!(await confirmBox('Удалить это окошко и его линии?'))) return;
+      checkpoint(); nodes = nodes.filter((q) => q.id !== n.id); edges = edges.filter((q) => q.from !== n.id && q.to !== n.id); sel = null; render(); changed();
+    }
+  };
+  render(); center();
+  setTimeout(() => { render(); if (saved) center(); }, 80); // размеры окошек известны после показа шрифтов
 }
 
 // ---------- вкладка «Заметки»: папки и поиск ----------
