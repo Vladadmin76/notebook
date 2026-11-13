@@ -212,7 +212,7 @@ async function screenMaps() {
       if (res.ok) { toast('Карта удалена'); return screenMaps(); }
       return notify('Не удалось удалить. Попробуйте ещё раз.');
     }
-    if (e.target.closest('#newMap')) chooseMapKind();
+    if (e.target.closest('#newMap')) show(() => screenBoard(null, null)); // новая карта всегда доска
   };
 }
 
@@ -247,20 +247,7 @@ const pickColor = () => new Promise((resolve) => {
   m.querySelector('#swReset').onclick = () => done('');
 });
 
-// ---------- Выбор вида новой карты: доска или дерево ----------
-function chooseMapKind() {
-  const m = document.createElement('div'); m.className = 'modal';
-  m.innerHTML = `<div class="sheet"><h3>Новая карта</h3><div class="btnrow col">
-    <button id="kBoard">🗺️ Доска<br><small>окошки двигаете пальцем, сводите вместе</small></button>
-    <button class="ghost" id="kTree">🧠 Дерево<br><small>ветки раскладываются сами</small></button>
-    <button class="ghost" id="kNo">Отмена</button></div></div>`;
-  document.body.appendChild(m);
-  m.querySelector('#kNo').onclick = () => m.remove();
-  m.querySelector('#kBoard').onclick = () => { m.remove(); show(() => screenBoard(null, null)); };
-  m.querySelector('#kTree').onclick = () => { m.remove(); show(() => screenMapEditor(null)); };
-}
-
-// ---------- Дерево: ветки раскладываются сами ----------
+// ---------- Дерево: только для уже созданных карт, новые теперь создаются досками ----------
 async function screenMapEditor(mapId) {
   h(`${subHeader('Карта', '<span class="muted" id="mapState"></span>')}<div id="mapbox"></div><div class="mapbar" id="mapbar" hidden></div>`);
   bindBack();

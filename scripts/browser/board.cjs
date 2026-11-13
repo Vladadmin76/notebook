@@ -19,7 +19,7 @@ const OUT = require('os').tmpdir() + '/';
   await page.goto('http://localhost:8787/');
   await page.waitForSelector('[data-tab="maps"]'); await page.tap('[data-tab="maps"]');
   await page.waitForSelector('#newMap'); await page.tap('#newMap');
-  await page.tap('#kBoard'); await page.waitForSelector('#mapPlusB'); await page.tap('#mapPlusB');
+  await page.waitForSelector('#mapPlusB'); await page.tap('#mapPlusB');
   await page.fill('#askIn','Идея'); await page.tap('#askYes'); await page.waitForSelector('.bnode');
   const T = (t) => '.bnode:text-is("' + t + '")';
   const cdp0 = await ctx.newCDPSession(page);
