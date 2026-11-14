@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import http from 'node:http';
+import { execSync } from 'node:child_process';
 
 const env = Object.fromEntries(readFileSync(new URL('../.dev.vars', import.meta.url), 'utf8').split('\n')
   .filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()]));
@@ -85,6 +86,18 @@ const shopA = await call(A, '/api/shopping/add', { name: 'Секретный т�
 const itemId = shopA.data.items.find((i) => i.name === 'Секретный товар')?.id;
 check('у админа есть заметка, напоминание и пункт покупок', !!(N && itemId));
 check('админская ссылка .ics создаётся', (await call(A, `/api/ics-link?note_id=${N}`)).status === 200);
+
+// правка текста заметки обновляет и текст ожидающего напоминания (раньше оставалась старая копия)
+{
+  const sql = (q) => execSync(`npx wrangler d1 execute notes_db --local --json --command "${q}" 2>/dev/null`, { cwd: new URL('..', import.meta.url).pathname }).toString().replace(/^[^\[]*/, '');
+  sql(`UPDATE reminders SET text = 'именную еду забрать' WHERE note_id = ${N} AND status = 'pending'`);
+  const before = JSON.parse(sql(`SELECT text FROM reminders WHERE note_id = ${N} AND status = 'pending'`))[0].results[0]?.text;
+  await call(A, '/api/notes/update', { id: N, text: 'Напомнить Диминую еду забрать (исправлено)' });
+  const after = JSON.parse(sql(`SELECT text FROM reminders WHERE note_id = ${N} AND status = 'pending'`))[0].results[0]?.text;
+  check('у напоминания была старая копия текста', before === 'именную еду забрать', String(before));
+  check('после правки заметки копия сброшена: напоминание берёт новый текст', after === null, String(after));
+  await call(A, '/api/notes/update', { id: N, text: secret.text });
+}
 
 // --- 5. второй человек не видит и не меняет чужое ---
 const nB = await call(Bd, '/api/notes');

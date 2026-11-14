@@ -362,8 +362,12 @@ export async function updateNote(db, userId, id, { text, folderId }) {
   if (folderId !== undefined) { sets.push('folder_id = ?'); vals.push(folderId); }
   if (!sets.length) return false;
   sets.push('updated_at = ?'); vals.push(nowIso());
-  const r = await db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).bind(...vals, id, userId).run();
-  return r.meta.changes === 1;
+  const stmts = [db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ? AND user_id = ? AND deleted_at IS NULL`).bind(...vals, id, userId)];
+  // У напоминания своя короткая копия текста (reminders.text). После правки заметки её сбрасываем:
+  // напоминание, календарная ссылка и «Отложить» берут тогда исправленный текст заметки.
+  if (text !== undefined) stmts.push(db.prepare(`UPDATE reminders SET text = NULL WHERE note_id = ? AND user_id = ? AND status = 'pending'`).bind(id, userId));
+  const res = await db.batch(stmts);
+  return res[0].meta.changes === 1;
 }
 
 export const addShoppingOne = (db, userId, name, listId = null) => addShoppingItems(db, userId, [{ name, listId }]);
