@@ -355,13 +355,15 @@ async function screenMapEditor(mapId) {
 // ---------- «Доска»: окошки ставит сам человек, линии идут от одного к другому ----------
 const rid = () => Math.random().toString(16).slice(2, 10) + Date.now().toString(16).slice(-6);
 async function screenBoard(mapId, saved) {
-  h(`${subHeader('Доска', '<span class="muted" id="mapState"></span>')}<div id="bbox"><div id="bworld"><svg id="bsvg" width="1" height="1"></svg><div id="bnodes"></div></div></div>
+  h(`${subHeader('Доска', '<span class="muted" id="mapState"></span>')}<div id="bbox"><div id="bworld"><svg id="bsvg" width="1" height="1"></svg><svg id="bthread" width="1" height="1"></svg><div id="bnodes"></div></div></div>
     <div class="mapbar" id="mapbar"></div>`);
   bindBack();
   swipes(false);
   const box = $('bbox'), world = $('bworld'), svg = $('bsvg'), layer = $('bnodes'), bar = $('mapbar'), state = $('mapState');
   let nodes = saved ? saved.nodes : [], edges = saved ? saved.edges : [];
   let sel = null, tx = 0, ty = 0, sc = 1, dirty = false, timer = null, saving = Promise.resolve();
+  let linkMode = false; // режим соединения: окошки замерли, у каждого точка, от неё тянут нить к другому окошку
+  let th = null, pan2 = null; // нить, которую тянут первым пальцем; второй палец двигает доску
   const undo = [], redo = [];
   const size = {}; // id → {w, h}, измеряется после показа
   const byId = (id) => nodes.find((n) => n.id === id);
@@ -412,10 +414,11 @@ async function screenBoard(mapId, saved) {
     svg.innerHTML = out.join('');
   }
   function drawNodes() {
-    layer.innerHTML = nodes.map((n) => `<div class="bnode ${n.id === sel ? 'sel' : ''}" data-id="${n.id}" style="left:${n.x}px;top:${n.y}px;${n.color ? `background:${n.color};color:${textOn(n.color)};border-color:${n.color}` : ''}">${esc(n.topic) || '&nbsp;'}</div>`).join('');
+    layer.innerHTML = nodes.map((n) => `<div class="bnode ${n.id === sel ? 'sel' : ''}" data-id="${n.id}" style="left:${n.x}px;top:${n.y}px;${n.color ? `background:${n.color};color:${textOn(n.color)};border-color:${n.color}` : ''}">${esc(n.topic) || '&nbsp;'}${linkMode ? '<span class="bdot" aria-label="Тянуть нить"></span>' : ''}</div>`).join('');
     for (const el of layer.children) size[el.dataset.id] = { w: el.offsetWidth, h: el.offsetHeight };
   }
   const render = () => {
+    box.classList.toggle('linkmode', linkMode);
     drawNodes(); drawEdges();
     $('mapPlusB').hidden = nodes.length > 0;
     bar.hidden = nodes.length === 0;
@@ -440,11 +443,28 @@ async function screenBoard(mapId, saved) {
     return { x: rp.x + rp.w + 70, y: rp.y + 80 };
   };
   // ---- жесты: тянуть окошко, двигать доску, щипок, удержание линии ----
+  // нить от точки окошка до пальца; окошко под пальцем подсвечивается рамкой
+  const thread = $('bthread');
+  const nodeAt = (w, except) => nodes.find((o) => { if (o.id === except) return false; const r = rect(o); return w.x >= r.x && w.x <= r.x + r.w && w.y >= r.y && w.y <= r.y + r.h; });
+  function updateThread() {
+    if (!th) return;
+    const a = byId(th.from); if (!a) { th = null; return; }
+    const ra = rect(a), w = toWorld(th.x, th.y);
+    const p1 = { x: ra.x + ra.w, y: ra.y + ra.h / 2 };
+    th.target = nodeAt(w, th.from)?.id || null;
+    layer.querySelectorAll('.bnode').forEach((x) => x.classList.toggle('drop', x.dataset.id === th.target));
+    thread.innerHTML = `<path d="M${p1.x},${p1.y} C${p1.x + 70},${p1.y} ${w.x - 70},${w.y} ${w.x},${w.y}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-dasharray="7 5" stroke-linecap="round"/><circle cx="${w.x}" cy="${w.y}" r="7" fill="var(--accent)"/>`;
+  }
   const ptr = new Map();
   let mode = null, drag = null, pan = null, pinch = null, hold = null;
   box.addEventListener('pointerdown', (e) => {
     box.setPointerCapture(e.pointerId);
     ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (linkMode) {
+      if (th) { if (!pan2) pan2 = { pid: e.pointerId, sx: e.clientX, sy: e.clientY, tx, ty }; return; } // второй палец двигает доску, нить остаётся в руке
+      const dot = e.target.closest('.bdot');
+      if (dot) { th = { from: dot.parentElement.dataset.id, pid: e.pointerId, x: e.clientX, y: e.clientY, target: null }; updateThread(); return; }
+    }
     if (ptr.size === 2) { // два пальца: масштаб; начатое перетаскивание отменяется
       if (drag) { const n = byId(drag.id); n.x = drag.ox; n.y = drag.oy; drag = null; render(); }
       clearTimeout(hold); mode = 'pinch';
@@ -452,12 +472,12 @@ async function screenBoard(mapId, saved) {
       return;
     }
     const nodeEl = e.target.closest('.bnode'), edgeEl = e.target.closest('.bedge');
-    if (nodeEl) {
+    if (nodeEl && !linkMode) {
       const n = byId(nodeEl.dataset.id); sel = n.id; layer.querySelectorAll('.bnode').forEach((x) => x.classList.toggle('sel', x === nodeEl));
       mode = 'node'; drag = { id: n.id, sx: e.clientX, sy: e.clientY, ox: n.x, oy: n.y, moved: false, target: null };
       const nid = n.id; // удержание окошка без движения открывает меню окошка
       hold = setTimeout(() => { if (mode === 'node' && drag && !drag.moved) { mode = null; drag = null; render(); nodeMenu(nid); } }, 500);
-    } else if (edgeEl) {
+    } else if (edgeEl && !linkMode) {
       mode = 'edge'; const from = edgeEl.dataset.from, to = edgeEl.dataset.to;
       pan = { sx: e.clientX, sy: e.clientY, moved: false };
       hold = setTimeout(() => { if (mode === 'edge' && !pan.moved) { mode = null; edgeMenu(from, to); } }, 500);
@@ -467,6 +487,11 @@ async function screenBoard(mapId, saved) {
   });
   box.addEventListener('pointermove', (e) => {
     if (ptr.has(e.pointerId)) ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (th) {
+      if (e.pointerId === th.pid) { th.x = e.clientX; th.y = e.clientY; updateThread(); }
+      else if (pan2 && e.pointerId === pan2.pid) { tx = pan2.tx + e.clientX - pan2.sx; ty = pan2.ty + e.clientY - pan2.sy; applyView(); updateThread(); }
+      return;
+    }
     if (mode === 'pinch' && ptr.size >= 2 && pinch) {
       const [a, b] = [...ptr.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y);
       const ns = Math.min(3, Math.max(0.25, pinch.sc * d / pinch.d)); const r = box.getBoundingClientRect();
@@ -492,6 +517,16 @@ async function screenBoard(mapId, saved) {
   const finish = async (e) => {
     ptr.delete(e.pointerId);
     clearTimeout(hold);
+    if (th) {
+      if (e.pointerId === th.pid) { // первый палец отпущен: нить привязывается к окошку под ним
+        const t = th; th = null; pan2 = null; thread.innerHTML = ''; layer.querySelectorAll('.bnode').forEach((x) => x.classList.remove('drop'));
+        if (t.target && e.type === 'pointerup') {
+          if (edges.some((q) => (q.from === t.from && q.to === t.target) || (q.from === t.target && q.to === t.from))) return toast('Между ними уже есть линия');
+          checkpoint(); edges.push({ from: t.from, to: t.target }); render(); changed();
+        }
+      } else if (pan2 && e.pointerId === pan2.pid) pan2 = null;
+      return;
+    }
     if (mode === 'pinch') { if (ptr.size < 2) { mode = null; pinch = null; } return; }
     const m = mode, d = drag; mode = null; drag = null;
     if (m === 'node' && d) {
@@ -559,12 +594,17 @@ async function screenBoard(mapId, saved) {
   };
   box.insertAdjacentHTML('beforeend', '<button id="mapPlusB" class="mapplus" aria-label="Добавить мысль">+</button>');
   $('mapPlusB').onclick = addFirst;
-  bar.innerHTML = '<button id="bUndo" aria-label="Отменить">↩</button><button id="bRedo" aria-label="Вернуть">↪</button><button id="bFit" aria-label="Вписать">⤢</button>';
+  const drawBar = () => {
+    bar.innerHTML = '<button id="bUndo" aria-label="Отменить">↩</button><button id="bRedo" aria-label="Вернуть">↪</button>'
+      + (linkMode ? '<button id="bStop" class="bstop">Стоп</button>' : '<button id="bFit" aria-label="Вписать">⤢</button>');
+  };
+  drawBar();
   bar.onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.id === 'bUndo') { if (!undo.length) return; redo.push(snapshot()); restore(undo.pop()); render(); return changed(); }
     if (b.id === 'bRedo') { if (!redo.length) return; undo.push(snapshot()); restore(redo.pop()); render(); return changed(); }
     if (b.id === 'bFit') return center();
+    if (b.id === 'bStop') { linkMode = false; th = null; pan2 = null; thread.innerHTML = ''; drawBar(); render(); }
   };
 
   // ---- меню окошка (удержание): название, ветка, цвет, удалить ----
@@ -573,11 +613,12 @@ async function screenBoard(mapId, saved) {
     sel = id; render();
     const m = document.createElement('div'); m.className = 'modal';
     m.innerHTML = `<div class="sheet"><h3>${esc(n.topic.length > 40 ? n.topic.slice(0, 40) + '…' : n.topic) || 'Окошко'}</h3><div class="btnrow col">
-      <button id="nEdit">Изменить название</button><button class="ghost" id="nChild">Добавить ветку</button><button class="ghost" id="nColor">Изменить цвет</button>
+      <button id="nEdit">Изменить название</button><button class="ghost" id="nChild">Добавить ветку</button><button class="ghost" id="nColor">Изменить цвет</button><button class="ghost" id="nLink">Добавить точки</button>
       <button class="ghost danger" id="nDel">Удалить окошко</button><button class="ghost" id="nNo">Отмена</button></div></div>`;
     document.body.appendChild(m);
     m.style.pointerEvents = 'none'; setTimeout(() => { m.style.pointerEvents = ''; }, 500); // палец ещё лежит на экране
     m.querySelector('#nNo').onclick = () => m.remove();
+    m.querySelector('#nLink').onclick = () => { m.remove(); linkMode = true; sel = null; drawBar(); render(); toast('Тяните за точку к другому окошку'); };
     m.querySelector('#nEdit').onclick = async () => {
       m.remove(); const t = await askText('Текст окошка', n.topic, 200); if (!t) return;
       checkpoint(); n.topic = t; render(); changed();

@@ -190,3 +190,10 @@ html:has(#bbox), html:has(#mapbox) { overscroll-behavior: none; } body:has(#bbox
 .swrow .swdel { position: absolute; right: 0; top: 0; bottom: 0; width: 96px; margin: 0; padding: 0; border-radius: 0; background: var(--err); color: #fff; border: 0; font-weight: 600; }
 .swrow .swdel { visibility: hidden; }
 .swrow.open .swdel, .swrow.swiping .swdel { visibility: visible; }
+
+/* ---------- Доска: режим соединения ---------- */
+#bthread { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.bdot { position: absolute; right: -13px; top: 50%; width: 24px; height: 24px; margin-top: -12px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.35); touch-action: none; cursor: crosshair; }
+.bdot::after { content: ''; position: absolute; inset: -12px; } /* большая зона нажатия вокруг точки */
+#bbox.linkmode .bnode { cursor: default; }
+.mapbar .bstop { flex: 2; background: var(--err); color: #fff; font-weight: 600; }
