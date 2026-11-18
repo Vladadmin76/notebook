@@ -197,3 +197,7 @@ html:has(#bbox), html:has(#mapbox) { overscroll-behavior: none; } body:has(#bbox
 .bdot::after { content: ''; position: absolute; inset: -12px; } /* большая зона нажатия вокруг точки */
 #bbox.linkmode .bnode { cursor: default; }
 .mapbar .bstop { flex: 2; background: var(--err); color: #fff; font-weight: 600; }
+
+/* ---------- Напоминание «каждые N часов» ---------- */
+.timerow { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.timerow input { width: auto; flex: 1; min-width: 0; margin: 0; padding: 10px 6px; font-size: .95rem; }

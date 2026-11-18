@@ -152,10 +152,14 @@ export const deleteNote = (db, userId, noteId) =>
 
 // ---------- напоминания ----------
 
-export async function insertReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null }) {
-  const r = await db.prepare(`INSERT INTO reminders (user_id, note_id, remind_at, rrule, anchor_date, local_time, tz, text, status)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`)
-    .bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text).run();
+const ivCols = (iv) => (iv
+  ? [iv.everyMinutes, iv.from, iv.to, iv.weekdays.join(','), iv.nag ? 1 : 0]
+  : [null, null, null, null, 0]);
+
+export async function insertReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null, interval = null }) {
+  const r = await db.prepare(`INSERT INTO reminders (user_id, note_id, remind_at, rrule, anchor_date, local_time, tz, text, status, int_minutes, win_from, win_to, int_days, nag)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`)
+    .bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text, ...ivCols(interval)).run();
   return r.meta.last_row_id;
 }
 
@@ -177,25 +181,47 @@ export const revertReminder = (db, r) =>
   db.prepare(`UPDATE reminders SET status = 'pending', remind_at = ? WHERE id = ?`).bind(r.remind_at, r.id).run();
 
 export const cancelReminder = (db, id) =>
-  db.prepare(`UPDATE reminders SET status = 'cancelled' WHERE id = ?`).bind(id).run();
+  db.prepare(`UPDATE reminders SET status = 'cancelled', nag_active = 0 WHERE id = ?`).bind(id).run();
 
 export const getReminder = (db, userId, id) =>
   db.prepare(`SELECT r.*, COALESCE(r.text, n.text) AS msg FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
               WHERE r.id = ? AND r.user_id = ?`).bind(id, userId).first();
 
 export const listPendingReminders = (db, userId, limit = 20) =>
-  db.prepare(`SELECT r.id, r.remind_at, r.rrule, r.local_time, r.tz, COALESCE(r.text, n.text) AS msg
+  db.prepare(`SELECT r.id, r.remind_at, r.rrule, r.local_time, r.tz, r.int_minutes, r.win_from, r.win_to, r.int_days, COALESCE(r.text, n.text) AS msg
               FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
               WHERE r.user_id = ? AND r.status = 'pending' AND (n.id IS NULL OR n.deleted_at IS NULL) ORDER BY r.remind_at LIMIT ?`)
     .bind(userId, limit).all().then((r) => r.results);
 
 export const cancelNoteReminders = (db, userId, noteId) =>
-  db.prepare(`UPDATE reminders SET status = 'cancelled' WHERE user_id = ? AND note_id = ? AND status = 'pending'`)
+  db.prepare(`UPDATE reminders SET status = 'cancelled', nag_active = 0 WHERE user_id = ? AND note_id = ? AND status = 'pending'`)
     .bind(userId, noteId).run().then((r) => r.meta.changes);
 
 export const hasPendingReminder = (db, userId, noteId) =>
   db.prepare(`SELECT 1 AS x FROM reminders WHERE user_id = ? AND note_id = ? AND status = 'pending' LIMIT 1`)
     .bind(userId, noteId).first().then(Boolean);
+
+// ---------- настойчивый режим: повтор каждую минуту, пока не нажато «Готово» ----------
+// Начало (или новый цикл) повторов после отправки сообщения msgId; следующее повторение через минуту, но не позже nagUntil
+export const startNag = (db, id, msgId, nextIso, untilIso) =>
+  db.prepare('UPDATE reminders SET nag_active = 1, nag_msg = ?, nag_next = ?, nag_until = ? WHERE id = ?').bind(msgId, nextIso, untilIso, id).run();
+
+export const dueNags = (db, nowIso, limit) =>
+  db.prepare(`SELECT r.*, COALESCE(r.text, n.text) AS msg, u.status AS ustatus
+              FROM reminders r JOIN users u ON u.id = r.user_id LEFT JOIN notes n ON n.id = r.note_id
+              WHERE r.nag_active = 1 AND r.nag_next <= ? AND r.status = 'pending' AND (n.id IS NULL OR n.deleted_at IS NULL) ORDER BY r.nag_next LIMIT ?`)
+    .bind(nowIso, limit).all().then((r) => r.results);
+
+// Захват повторения: сработает только один из параллельных вызовов
+export const claimNag = (db, r, nextIso) =>
+  db.prepare('UPDATE reminders SET nag_next = ? WHERE id = ? AND nag_active = 1 AND nag_next = ?').bind(nextIso, r.id, r.nag_next).run().then((x) => x.meta.changes === 1);
+
+export const setNagMsg = (db, id, msgId) => db.prepare('UPDATE reminders SET nag_msg = ? WHERE id = ?').bind(msgId, id).run();
+
+// Срок повторов вышел: повторы прекращаются, но последнее сообщение запоминаем, чтобы заменить его в следующем цикле
+export const expireNag = (db, id) => db.prepare('UPDATE reminders SET nag_active = 0 WHERE id = ?').bind(id).run();
+
+export const stopNag = (db, id) => db.prepare('UPDATE reminders SET nag_active = 0, nag_msg = NULL WHERE id = ?').bind(id).run();
 
 // ---------- списки покупок (по магазинам) ----------
 // listKey: 'all' (все списки), 'none' («Без магазина») или номер списка
@@ -346,13 +372,13 @@ export async function notesForApp(db, userId, { folderId = null, q = '', limit =
 export const pendingRemindersForNotes = (db, userId, noteIds) => {
   if (!noteIds.length) return Promise.resolve([]);
   const marks = noteIds.map(() => '?').join(',');
-  return db.prepare(`SELECT id, note_id, remind_at, rrule, local_time, tz, text FROM reminders
+  return db.prepare(`SELECT id, note_id, remind_at, rrule, local_time, tz, text, int_minutes, win_from, win_to, int_days, nag FROM reminders
                      WHERE user_id = ? AND status = 'pending' AND note_id IN (${marks}) ORDER BY remind_at`)
     .bind(userId, ...noteIds).all().then((r) => r.results);
 };
 
 export const pendingRemindersWithText = (db, userId) =>
-  db.prepare(`SELECT r.id, r.note_id, r.remind_at, r.rrule, r.local_time, r.anchor_date, r.tz, COALESCE(r.text, n.text) AS msg
+  db.prepare(`SELECT r.id, r.note_id, r.remind_at, r.rrule, r.local_time, r.anchor_date, r.tz, r.int_minutes, r.win_from, r.win_to, r.int_days, COALESCE(r.text, n.text) AS msg
               FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
               WHERE r.user_id = ? AND r.status = 'pending' AND (n.id IS NULL OR n.deleted_at IS NULL) ORDER BY r.remind_at LIMIT 500`).bind(userId).all().then((r) => r.results);
 
@@ -376,11 +402,11 @@ export const deleteShoppingItem = (db, userId, id) =>
   db.prepare('UPDATE shopping_items SET deleted_at = ?, deleted_with_list = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(nowIso(), id, userId).run().then((r) => r.meta.changes === 1);
 
 // Заменяем напоминание заметки: старые активные отменяем, создаём новое
-export async function replaceNoteReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null }) {
+export async function replaceNoteReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null, interval = null }) {
   await db.batch([
-    db.prepare(`UPDATE reminders SET status = 'cancelled' WHERE user_id = ? AND note_id = ? AND status = 'pending'`).bind(userId, noteId),
-    db.prepare(`INSERT INTO reminders (user_id, note_id, remind_at, rrule, anchor_date, local_time, tz, text, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`).bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text),
+    db.prepare(`UPDATE reminders SET status = 'cancelled', nag_active = 0 WHERE user_id = ? AND note_id = ? AND status = 'pending'`).bind(userId, noteId),
+    db.prepare(`INSERT INTO reminders (user_id, note_id, remind_at, rrule, anchor_date, local_time, tz, text, status, int_minutes, win_from, win_to, int_days, nag)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`).bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text, ...ivCols(interval)),
   ]);
 }
 

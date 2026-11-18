@@ -4,7 +4,7 @@ import { DateTime } from 'luxon';
 import * as db from './db.js';
 import { json } from './util.js';
 import { LIMITS } from './config.js';
-import { utc, isoUtc, planReminder, nextRecurrence, parseRrule, describeRepeat, formatWhen } from './timeutil.js';
+import { utc, isoUtc, planReminder, nextRecurrence, parseRrule, describeRepeat, describeInterval, formatWhen } from './timeutil.js';
 import { buildIcs, googleCalendarUrl, signIcs } from './ics.js';
 import * as trash from './trash.js';
 import * as maps from './maps.js';
@@ -22,6 +22,10 @@ function reminderView(r, tz, nowIso) {
     id: r.id, at: r.remind_at, local: local.toFormat("yyyy-MM-dd'T'HH:mm"),
     when: formatWhen(r.remind_at, tz, nowIso),
     repeat: parsed ? { weekdays: parsed.weekdays, interval_weeks: parsed.intervalWeeks, text: describeRepeat(r.rrule, r.local_time) } : null,
+    interval: r.int_minutes ? (() => {
+      const iv = { everyMinutes: r.int_minutes, from: r.win_from, to: r.win_to, weekdays: String(r.int_days).split(',').map(Number) };
+      return { every_minutes: iv.everyMinutes, from: iv.from, to: iv.to, weekdays: iv.weekdays, nag: !!r.nag, text: describeInterval(iv) };
+    })() : null,
   };
 }
 
@@ -134,10 +138,14 @@ export async function handleAppApi({ request, env, url, user, body }) {
   if (path === '/api/reminders/set' && post) {
     const note = await db.getNote(D, user.id, intOr(body.note_id));
     if (!note) return json({ error: 'not_found' }, 404);
-    const local = String(body.local ?? '');
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)) return json({ error: 'bad_time' }, 400);
     let remind;
-    if (body.repeat) {
+    const local = String(body.local ?? '');
+    if (body.interval) {
+      // «Каждые N часов»: время начала не нужно, расписание задают шаг, окно дня и дни недели
+      remind = { at: null, in_minutes: null, repeat: null, interval: { every_minutes: body.interval.every_minutes, from: body.interval.from, to: body.interval.to,
+        weekdays: Array.isArray(body.interval.weekdays) ? body.interval.weekdays : [], nag: body.interval.nag !== false } };
+    } else if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)) return json({ error: 'bad_time' }, 400);
+    else if (body.repeat) {
       const weekdays = Array.isArray(body.repeat.weekdays) ? body.repeat.weekdays.map(Number) : [];
       remind = { at: `${local}:00`, in_minutes: null, repeat: { weekdays, interval_weeks: Number(body.repeat.interval_weeks) || 1 } };
     } else {
@@ -149,7 +157,7 @@ export async function handleAppApi({ request, env, url, user, body }) {
     const plan = planReminder(remind, tz, nowIso);
     if (!plan) return json({ error: 'bad_time' }, 400);
     await db.replaceNoteReminder(D, { userId: user.id, noteId: note.id, remindAt: plan.remindAt, rrule: plan.rrule,
-      anchorDate: plan.anchorDate, localTime: plan.localTime, tz });
+      anchorDate: plan.anchorDate, localTime: plan.localTime, tz, interval: plan.interval });
     const [r] = await db.pendingRemindersForNotes(D, user.id, [note.id]);
     return json({ reminder: reminderView(r, tz, nowIso) });
   }

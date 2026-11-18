@@ -7,7 +7,7 @@ import * as trash from './trash.js';
 import { resolveStore, buildEntries, MAX_ALIASES } from './stores.js';
 import { transcribe } from './groq.js';
 import { downloadFile, TG_DOWNLOAD_LIMIT } from './telegram.js';
-import { localNowInfo, planReminder, formatWhen, describeRepeat, snoozeHour, tomorrowNine } from './timeutil.js';
+import { localNowInfo, planReminder, formatWhen, describeRepeat, describeInterval, snoozeHour, tomorrowNine } from './timeutil.js';
 
 const REFUSAL = 'Бот работает по приглашению. Попросите у владельца ссылку-приглашение и откройте её в Telegram.';
 
@@ -267,9 +267,11 @@ export function createBot(env) {
     let reminderLine = '';
     if (plan) {
       await db.insertReminder(D, { userId: ctx.user.id, noteId, remindAt: plan.remindAt, rrule: plan.rrule, anchorDate: plan.anchorDate,
-        localTime: plan.localTime, tz: plan.tz, text: note.remind.text });
+        localTime: plan.localTime, tz: plan.tz, text: note.remind.text, interval: plan.interval });
       const what = note.remind.text ?? note.text;
-      reminderLine = plan.rrule
+      reminderLine = plan.interval
+        ? `\n⏰ Буду напоминать ${describeInterval(plan.interval)}${plan.interval.nag ? ' и повторять каждую минуту, пока не нажмёте «Готово»' : ''}. Первое: ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`
+        : plan.rrule
         ? `\n⏰ Буду напоминать ${describeRepeat(plan.rrule, plan.localTime)}, первый раз ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`
         : `\n⏰ Напомню ${formatWhen(plan.remindAt, plan.tz, nowIso)}: ${escapeHtml(what)}`;
     }
@@ -483,13 +485,17 @@ export function createBot(env) {
     const list = await db.listPendingReminders(D, ctx.user.id, 20);
     if (!list.length) return ctx.reply('Будущих напоминаний нет. Напишите, например: «завтра в 9 позвонить Ивану».');
     const nowIso = new Date().toISOString();
-    const line = (r) => `• ${formatWhen(r.remind_at, ctx.user.tz, nowIso)}${r.rrule ? ` (повтор: ${describeRepeat(r.rrule, r.local_time)})` : ''} — ${r.msg ?? ''}`;
+    const ivOf = (r) => ({ everyMinutes: r.int_minutes, from: r.win_from, to: r.win_to, weekdays: String(r.int_days).split(',').map(Number) });
+    const line = (r) => `• ${formatWhen(r.remind_at, ctx.user.tz, nowIso)}${r.int_minutes ? ` (${describeInterval(ivOf(r))})` : r.rrule ? ` (повтор: ${describeRepeat(r.rrule, r.local_time)})` : ''} — ${r.msg ?? ''}`;
     return ctx.reply(list.map(line).join('\n'));
   });
 
   // «Готово» под сработавшим напоминанием
   bot.callbackQuery(/^rd:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery({ text: 'Готово' });
+    // «Каждые N часов»: повторы прекращаются, сообщение исчезает, расписание идёт как шло (следующий срок не сдвигается)
+    const rem = await db.getReminder(D, ctx.user.id, Number(ctx.match[1]));
+    if (rem && rem.int_minutes) { await db.stopNag(D, rem.id); return ctx.deleteMessage().catch(() => {}); }
     const original = ctx.callbackQuery.message?.text ?? '';
     return ctx.editMessageText(`✅ ${original.replace(/^🔔\s*/, '')}`);
   });

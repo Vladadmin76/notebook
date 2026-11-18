@@ -695,7 +695,7 @@ document.addEventListener('click', (e) => {
 function noteCards(notes) {
   return notes.map((n) => `<div class="note" data-note="${n.id}">
       <div class="note-text">${linkify(esc(n.text))}</div>
-      <div class="meta">${esc(n.folder ?? '')} · ${esc(fmtDate(n.created_at))}${n.reminder ? ` · <span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat ? ' 🔁' : ''}</span>` : ''}</div></div>`).join('');
+      <div class="meta">${esc(n.folder ?? '')} · ${esc(fmtDate(n.created_at))}${n.reminder ? ` · <span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat || n.reminder.interval ? ' 🔁' : ''}</span>` : ''}</div></div>`).join('');
 }
 
 // ---------- папка ----------
@@ -720,7 +720,7 @@ async function screenFolder(id, name, kind = null) {
     const row = (n) => `<div class="task ${n.done ? 'done' : ''}" data-note="${n.id}">
         <button class="box" data-toggle="${n.id}" aria-label="Отметить">${n.done ? '✓' : ''}</button>
         <div class="tbody"><div class="ttext">${linkify(esc(n.text))}</div>
-          ${n.reminder ? `<div class="meta"><span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat ? ' 🔁' : ''}</span></div>` : ''}</div>
+          ${n.reminder ? `<div class="meta"><span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat || n.reminder.interval ? ' 🔁' : ''}</span></div>` : ''}</div>
         <button class="x" data-del="${n.id}" aria-label="Удалить">✕</button></div>`;
     $('list').innerHTML = (open.map(row).join('') || `<p class="muted">${q ? 'Ничего не найдено.' : 'Невыполненных задач нет.'}</p>`)
       + (done.length ? `<div class="donebar">Выполненные · ${done.length}</div>${done.map(row).join('')}` : '');
@@ -770,7 +770,7 @@ async function screenNote(id) {
       <button id="save" disabled>Сохранить</button>
     </section>
     <section class="card"><h2>Напоминание</h2>
-      ${reminder ? `<p>⏰ <b>${esc(reminder.when)}</b>${reminder.repeat ? `<br><span class="muted">🔁 ${esc(reminder.repeat.text)}</span>` : ''}</p>
+      ${reminder ? `<p>⏰ <b>${esc(reminder.when)}</b>${reminder.interval ? `<br><span class="muted">🔁 ${esc(reminder.interval.text)}${reminder.interval.nag ? '<br>Повторяю каждую минуту, пока не нажмёте «Готово»' : ''}</span>` : reminder.repeat ? `<br><span class="muted">🔁 ${esc(reminder.repeat.text)}</span>` : ''}</p>
         <div class="btnrow"><button class="ghost mini" id="remEdit">Изменить</button><button class="ghost mini danger" id="remOff">Убрать</button></div>
         <div class="btnrow"><button class="ghost mini" id="ics">В календарь (.ics)</button><button class="ghost mini" id="gcal">В Google Календарь</button></div>`
       : '<p class="muted">Не задано.</p><button class="ghost" id="remEdit">Добавить напоминание</button>'}
@@ -833,38 +833,66 @@ function screenReminder(noteId, existing) {
   const soon = new Date(Date.now() + 3600e3);
   const dflt = `${soon.getFullYear()}-${pad(soon.getMonth() + 1)}-${pad(soon.getDate())}T${pad(soon.getHours())}:00`;
   const rep = existing && existing.repeat;
+  const iv = existing && existing.interval;
   const days = new Set(rep ? rep.weekdays : []);
+  const ivDays = new Set(iv ? iv.weekdays : [1, 2, 3, 4, 5, 6, 7]);
+  const STEPS = [[15, '15 минут'], [30, '30 минут'], [60, 'Каждый час'], [90, '1,5 часа'], [120, '2 часа'], [180, '3 часа'], [240, '4 часа'], [360, '6 часов']];
   h(`${subHeader('Напоминание')}
     <section class="card">
-      <h3>Когда</h3>
-      <input id="when" type="datetime-local" value="${esc(existing ? existing.local : dflt)}">
-      <p class="muted small">Время по вашему часовому поясу: ${esc(me.tz)}</p>
-      <label class="check"><input type="checkbox" id="repeat" ${rep ? 'checked' : ''}> Повторять</label>
-      <div id="repbox" ${rep ? '' : 'hidden'}>
-        <h3>По дням недели</h3>
-        <div class="chips" id="days">${WD.map((d, i) => `<button type="button" data-d="${i + 1}" class="chip ${days.has(i + 1) ? 'on' : ''}">${d}</button>`).join('')}</div>
+      <label class="check"><input type="checkbox" id="ivOn" ${iv ? 'checked' : ''}> Несколько раз в день (например, пить воду каждые 2 часа)</label>
+      <div id="whenbox" ${iv ? 'hidden' : ''}>
+        <h3>Когда</h3>
+        <input id="when" type="datetime-local" value="${esc(existing && !iv ? existing.local : dflt)}">
+        <p class="muted small">Время по вашему часовому поясу: ${esc(me.tz)}</p>
+        <label class="check"><input type="checkbox" id="repeat" ${rep ? 'checked' : ''}> Повторять</label>
+        <div id="repbox" ${rep ? '' : 'hidden'}>
+          <h3>По дням недели</h3>
+          <div class="chips" id="days">${WD.map((d, i) => `<button type="button" data-d="${i + 1}" class="chip ${days.has(i + 1) ? 'on' : ''}">${d}</button>`).join('')}</div>
+          <h3>Как часто</h3>
+          <select id="every">${[1, 2, 3, 4].map((n) => `<option value="${n}" ${rep && rep.interval_weeks === n ? 'selected' : ''}>${n === 1 ? 'Каждую неделю' : `Раз в ${n} недели`}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div id="ivbox" ${iv ? '' : 'hidden'}>
         <h3>Как часто</h3>
-        <select id="every">${[1, 2, 3, 4].map((n) => `<option value="${n}" ${rep && rep.interval_weeks === n ? 'selected' : ''}>${n === 1 ? 'Каждую неделю' : `Раз в ${n} недели`}</option>`).join('')}</select>
+        <select id="ivStep">${STEPS.map(([m, t]) => `<option value="${m}" ${iv && iv.every_minutes === m ? 'selected' : (!iv && m === 120 ? 'selected' : '')}>${m === 60 ? t : `Каждые ${t}`}</option>`).join('')}</select>
+        <h3>В какое время суток</h3>
+        <div class="timerow"><span>с</span><input id="ivFrom" type="time" value="${esc(iv ? iv.from : '09:00')}"><span>до</span><input id="ivTo" type="time" value="${esc(iv ? iv.to : '21:00')}"></div>
+        <button type="button" class="ghost mini" id="ivAllDay">Круглые сутки</button>
+        <h3>По дням недели</h3>
+        <div class="chips" id="ivDays">${WD.map((d, i) => `<button type="button" data-d="${i + 1}" class="chip ${ivDays.has(i + 1) ? 'on' : ''}">${d}</button>`).join('')}</div>
+        <label class="check"><input type="checkbox" id="ivNag" ${!iv || iv.nag ? 'checked' : ''}> Повторять каждую минуту, пока не нажмёте «Готово»</label>
       </div>
       <p id="err" class="err" hidden></p>
       <button id="saveRem">Сохранить</button>
     </section>`);
   bindBack();
+  $('ivOn').onchange = () => { $('ivbox').hidden = !$('ivOn').checked; $('whenbox').hidden = $('ivOn').checked; };
   $('repeat').onchange = () => { $('repbox').hidden = !$('repeat').checked; };
   $('days').onclick = (e) => { const b = e.target.closest('button'); if (b) { b.classList.toggle('on'); haptic1(); } };
+  $('ivDays').onclick = (e) => { const b = e.target.closest('button'); if (b) { b.classList.toggle('on'); haptic1(); } };
+  $('ivAllDay').onclick = () => { $('ivFrom').value = '00:00'; $('ivTo').value = '23:59'; };
   $('saveRem').onclick = async () => {
     const err = $('err'); err.hidden = true;
+    const fail = (t) => { err.textContent = t; err.hidden = false; };
     const body = { note_id: noteId, local: $('when').value };
-    if (!body.local) { err.textContent = 'Выберите дату и время.'; err.hidden = false; return; }
-    if ($('repeat').checked) {
-      const wd = [...document.querySelectorAll('#days .chip.on')].map((b) => Number(b.dataset.d));
-      if (!wd.length) { err.textContent = 'Отметьте хотя бы один день недели.'; err.hidden = false; return; }
-      body.repeat = { weekdays: wd, interval_weeks: Number($('every').value) };
+    if ($('ivOn').checked) {
+      const wd = [...document.querySelectorAll('#ivDays .chip.on')].map((b) => Number(b.dataset.d));
+      if (!wd.length) return fail('Отметьте хотя бы один день недели.');
+      if (!$('ivFrom').value || !$('ivTo').value) return fail('Укажите время «с» и «до».');
+      if ($('ivTo').value < $('ivFrom').value) return fail('Время «до» должно быть позже времени «с».');
+      body.interval = { every_minutes: Number($('ivStep').value), from: $('ivFrom').value, to: $('ivTo').value, weekdays: wd, nag: $('ivNag').checked };
+    } else {
+      if (!body.local) return fail('Выберите дату и время.');
+      if ($('repeat').checked) {
+        const wd = [...document.querySelectorAll('#days .chip.on')].map((b) => Number(b.dataset.d));
+        if (!wd.length) return fail('Отметьте хотя бы один день недели.');
+        body.repeat = { weekdays: wd, interval_weeks: Number($('every').value) };
+      }
     }
     $('saveRem').disabled = true;
     const r = await api('/api/reminders/set', body);
     $('saveRem').disabled = false;
-    if (r.ok) { haptic(); back(); } else { err.textContent = errText(r.data.error); err.hidden = false; }
+    if (r.ok) { haptic(); back(); } else fail(errText(r.data.error));
   };
 }
 const haptic1 = () => { try { tg.HapticFeedback.selectionChanged(); } catch {} };

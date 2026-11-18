@@ -17,6 +17,7 @@ const SYSTEM_PROMPT = `Ты помощник для записной книжк�
 - "at": местное время пользователя в виде ГГГГ-ММ-ДДTЧЧ:ММ:СС. Текущее местное время и день недели переданы в полях now и weekday. Если указано время без даты и оно уже прошло сегодня, дата завтрашняя. Если указана дата без времени, время 09:00. Для относительных сроков («через 3 минуты») at=null.
 - "in_minutes": целое число минут, только для относительных сроков («через 3 минуты», «через 2 часа» = 120, «через 2 дня» = 2880). Иначе null.
 - "repeat": null или {"weekdays": [числа 1-7, где 1=понедельник, 7=воскресенье], "interval_weeks": 1}. Для «каждый понедельник» это [1], для «каждый день» [1,2,3,4,5,6,7], для «по будням» [1,2,3,4,5], для «раз в две недели по пятницам» weekdays [5] и interval_weeks 2. Если время не названо, поставь в at время 09:00 с любой датой.
+- "interval": null или {"every_minutes": число минут, "from": "ЧЧ:ММ", "to": "ЧЧ:ММ", "weekdays": [числа 1-7], "nag": true}. Это напоминание, которое повторяется много раз в течение дня: «каждые 2 часа» (every_minutes=120), «каждый час» (60), «каждые 45 минут» (45). from и to задают окно дня, в котором приходят напоминания («с 8 до 20» это from "08:00", to "20:00"; «круглые сутки» это from "00:00", to "23:59"). Если окно не названо, поставь from "09:00" и to "21:00". weekdays: дни недели, где 1=понедельник, 7=воскресенье («с понедельника по субботу» это [1,2,3,4,5,6], «по будням» [1,2,3,4,5]); если дни не названы, ставь все [1,2,3,4,5,6,7]. nag всегда true, кроме случая, когда человек просит напомнить один раз за срок или не настаивать. Для таких просьб поля at, in_minutes и repeat поставь null.
 - "text": короткий текст напоминания (что именно напомнить), без слов «напомни» и времени.
 6. Ссылки (адреса, начинающиеся с http:// или https://) сохраняй в тексте заметки точно как есть, без изменений и сокращений. Если пользователь называет папку («размести в Мои приложения»), выбери её или предложи как новую. Комментарий пользователя к ссылке оставь в тексте той же заметки рядом со ссылкой, саму фразу про размещение в текст не включай.
 7. Если сообщение это просьба ПОКАЗАТЬ список покупок («покажи список для Costco», «что купить в Walmart», «покажи все продукты», «покажи список покупок»), верни request={"type": "show_shopping", "store": название магазина или null, "all": true если просят все покупки или магазин не назван}, а notes и shopping оставь пустыми. Это относится только к просьбам показать, а не добавить покупки. Иначе request=null.
@@ -27,6 +28,8 @@ const SYSTEM_PROMPT = `Ты помощник для записной книжк�
 Сообщение «покажи список для Costco»:
 {"notes": [], "shopping": [], "request": {"type": "show_shopping", "store": "Costco", "all": false}}
 Сообщение «идея для сайта сделать тёмную тему»:
+Сообщение «напоминай пить воду каждые 2 часа с 8 до 20 с понедельника по субботу»:
+{"notes": [{"text": "Пить воду.", "folder": "Задачи", "new_folder": false, "remind": {"at": null, "in_minutes": null, "repeat": null, "interval": {"every_minutes": 120, "from": "08:00", "to": "20:00", "weekdays": [1,2,3,4,5,6], "nag": true}, "text": "Попить воды"}}], "shopping": [], "request": null}
 {"notes": [{"text": "Идея для сайта: сделать тёмную тему.", "folder": "Идеи", "new_folder": false, "remind": null}], "shopping": [], "request": null}`;
 
 const AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
@@ -43,11 +46,24 @@ function parseRemind(r) {
     };
     if (!repeat.weekdays.length) repeat = null;
   }
-  if (!at && inMinutes === null && !repeat) return null;
+  let interval = null;
+  if (r.interval && typeof r.interval === 'object') {
+    const every = Number(r.interval.every_minutes);
+    if (Number.isFinite(every) && every >= 1) {
+      interval = {
+        every_minutes: Math.round(every),
+        from: typeof r.interval.from === 'string' ? r.interval.from : null,
+        to: typeof r.interval.to === 'string' ? r.interval.to : null,
+        weekdays: Array.isArray(r.interval.weekdays) ? r.interval.weekdays.filter((n) => Number.isInteger(n) && n >= 1 && n <= 7) : [],
+        nag: r.interval.nag !== false,
+      };
+    }
+  }
+  if (!at && inMinutes === null && !repeat && !interval) return null;
   let text = typeof r.text === 'string' && r.text.trim() && r.text.length <= 300 ? r.text.trim() : null;
   // Пустышки вроде «Напоминание» или «Напомнить» ничего не говорят: берём текст заметки
   if (text && /^напомин\p{L}*[.!]?$/iu.test(text)) text = null;
-  return { at, in_minutes: inMinutes, repeat, text };
+  return { at, in_minutes: inMinutes, repeat, interval, text };
 }
 
 const URL_RE = /https?:\/\/[^\s<>"]+/gi;

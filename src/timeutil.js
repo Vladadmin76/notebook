@@ -41,12 +41,67 @@ export function nextRecurrence({ afterIso, tz, localTime, weekdays, intervalWeek
   return null;
 }
 
+// ---------- «каждые N минут в окне дня» ----------
+const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+
+// Ближайший срок строго после afterIso: в выбранные дни от начала окна с шагом everyMinutes, не позже конца окна (по местным часам)
+export function nextIntervalSlot({ afterIso, tz, from, to, everyMinutes, weekdays }) {
+  const after = utc(afterIso).setZone(tz);
+  const a = toMin(from), b = toMin(to);
+  for (let i = 0; i <= 8; i++) {
+    const day = after.startOf('day').plus({ days: i });
+    if (!weekdays.includes(day.weekday)) continue;
+    for (let m = a; m <= b; m += everyMinutes) {
+      const cand = day.set({ hour: Math.floor(m / 60), minute: m % 60, second: 0, millisecond: 0 });
+      if (cand > after) return isoUtc(cand);
+    }
+  }
+  return null;
+}
+
+// Проверка и приведение описания интервала от модели или из приложения; null, если описание негодное
+export function normalizeInterval(iv) {
+  if (!iv || typeof iv !== 'object') return null;
+  const every = Number(iv.every_minutes);
+  if (!Number.isFinite(every)) return null;
+  const everyMinutes = clamp(Math.round(every), 10, 24 * 60);
+  const from = TIME_RE.test(String(iv.from ?? '')) ? iv.from : '09:00';
+  let to = TIME_RE.test(String(iv.to ?? '')) ? iv.to : '21:00';
+  if (toMin(to) < toMin(from)) to = '23:59'; // окно «до утра» не поддерживаем: обрезаем концом суток
+  const wd = Array.isArray(iv.weekdays) ? [...new Set(iv.weekdays.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 7))].sort((x, y) => x - y) : [];
+  return { everyMinutes, from: pad2(from), to: pad2(to), weekdays: wd.length ? wd : [1, 2, 3, 4, 5, 6, 7], nag: iv.nag === false ? false : true };
+}
+const pad2 = (t) => { const [h, m] = t.split(':'); return `${h.padStart(2, '0')}:${m}`; };
+
+function daysText(weekdays) {
+  if (weekdays.length === 7) return 'каждый день';
+  const s = weekdays.join();
+  if (s === '1,2,3,4,5') return 'по будням';
+  if (s === '1,2,3,4,5,6') return 'с понедельника по субботу';
+  return weekdays.map((n) => WD_SHORT[n - 1].toLowerCase()).join(', ');
+}
+export function describeInterval({ everyMinutes, from, to, weekdays }) {
+  const every = everyMinutes % 60 === 0
+    ? (everyMinutes === 60 ? 'каждый час' : `каждые ${everyMinutes / 60} ${everyMinutes / 60 < 5 ? 'часа' : 'часов'}`)
+    : `каждые ${everyMinutes} мин`;
+  const win = from === '00:00' && to === '23:59' ? 'круглые сутки' : `с ${from.replace(/^0/, '')} до ${to.replace(/^0/, '')}`;
+  return `${every}, ${win}, ${daysText(weekdays)}`;
+}
+
 // ---------- план напоминания по ответу модели ----------
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
 export function planReminder(remind, tz, nowIso) {
   if (!remind) return null;
   const now = utc(nowIso).setZone(tz);
+
+  if (remind.interval) {
+    const iv = normalizeInterval(remind.interval);
+    if (!iv) return null;
+    const remindAt = nextIntervalSlot({ afterIso: nowIso, tz, from: iv.from, to: iv.to, everyMinutes: iv.everyMinutes, weekdays: iv.weekdays });
+    if (!remindAt) return null;
+    return { remindAt, tz, interval: iv };
+  }
 
   if (remind.repeat) {
     const weekdays = [...new Set(remind.repeat.weekdays.filter((n) => Number.isInteger(n) && n >= 1 && n <= 7))].sort((a, b) => a - b);
