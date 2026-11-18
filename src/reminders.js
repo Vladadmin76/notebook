@@ -36,7 +36,7 @@ export async function processTick(env, api, nowIso = new Date().toISOString()) {
     if (!(await db.claimReminder(D, r, next, nowIso))) continue; // уже взят параллельным вызовом
 
     try {
-      if (r.int_minutes) { await sendIntervalSlot(D, api, r, nowIso); sent++; continue; }
+      if (r.int_minutes) { await sendIntervalSlot(D, api, r, nowIso, next); sent++; continue; }
       await api.sendMessage(r.user_id, `🔔 Напоминание: ${escapeHtml(r.msg ?? '')}`,
         { parse_mode: 'HTML', reply_markup: reminderKeyboard(r.id) });
       sent++;
@@ -54,11 +54,12 @@ export async function processTick(env, api, nowIso = new Date().toISOString()) {
 const tryDelete = (api, chatId, msgId) => (msgId ? api.deleteMessage(chatId, msgId).catch(() => {}) : Promise.resolve());
 
 // Срок «каждые N часов»: прежнее сообщение заменяется новым; в настойчивом режиме начинается повтор каждую минуту
-async function sendIntervalSlot(D, api, r, nowIso) {
+async function sendIntervalSlot(D, api, r, nowIso, next) {
   await tryDelete(api, r.user_id, r.nag_msg);
   const m = await api.sendMessage(r.user_id, `🔔 Напоминание: ${escapeHtml(r.msg ?? '')}`, { parse_mode: 'HTML', reply_markup: intervalKeyboard(r.id) });
   if (!r.nag) { await db.setNagMsg(D, r.id, m.message_id); return; }
-  const until = isoUtc(utc(nowIso).plus({ minutes: r.int_minutes })); // повторяем не дольше, чем длится один шаг расписания (от момента отправки)
+  // Повторяем до следующего срока расписания, даже если до него вся ночь: время выбирает сам человек. Когда срок наступит, начнётся новый цикл.
+  const until = next ?? isoUtc(utc(nowIso).plus({ years: 1 }));
   await db.startNag(D, r.id, m.message_id, isoUtc(utc(nowIso).plus({ seconds: NAG_EVERY_SEC })), until);
 }
 

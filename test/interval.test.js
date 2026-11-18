@@ -35,7 +35,7 @@ test('срок: переход на зимнее время не сдвигае�
 test('нормализация расписания: шаг не короче 10 минут, плохие значения заменяются, настойчивый режим по умолчанию', () => {
   assert.deepEqual(normalizeInterval({ every_minutes: 1 }), { everyMinutes: 10, from: '09:00', to: '21:00', weekdays: [1, 2, 3, 4, 5, 6, 7], nag: true });
   assert.equal(normalizeInterval({ every_minutes: 120, from: '8:00', to: '20:00' }).from, '08:00');
-  assert.equal(normalizeInterval({ every_minutes: 120, from: '20:00', to: '08:00' }).to, '23:59'); // окно «до утра» обрезается концом суток
+  assert.equal(normalizeInterval({ every_minutes: 120, from: '20:00', to: '08:00' }).to, '08:00'); // ночное окно сохраняется как есть
   assert.equal(normalizeInterval({ every_minutes: 120, nag: false }).nag, false);
   assert.deepEqual(normalizeInterval({ every_minutes: 60, weekdays: [6, 1, 1, 9, 'x'] }).weekdays, [1, 6]);
   assert.equal(normalizeInterval({ every_minutes: 'abc' }), null);
@@ -63,4 +63,19 @@ test('ответ модели: расписание «каждые 2 часа» 
   const r = parseModelReply(reply, ['Идеи', 'Задачи', 'Разное'], 'напоминай пить воду каждые 2 часа с 8 до 20 с понедельника по субботу');
   assert.deepEqual(r.notes[0].remind.interval, { every_minutes: 120, from: '08:00', to: '20:00', weekdays: [1, 2, 3, 4, 5, 6], nag: true });
   assert.equal(r.notes[0].remind.text, 'Попить воды');
+});
+
+test('ночная смена: окно с 20:00 до 08:00 переходит через полночь, дни считаются по началу окна', () => {
+  const night = { from: '20:00', to: '08:00', everyMinutes: 120, weekdays: [1, 2, 3, 4, 5] };
+  assert.equal(local(slot('2026-11-16T19:00:00', night)), 'Mon 20:00');
+  assert.equal(local(slot('2026-11-16T21:00:00', night)), 'Mon 22:00');
+  assert.equal(local(slot('2026-11-16T23:30:00', night)), 'Tue 00:00');   // за полночью окно продолжается
+  assert.equal(local(slot('2026-11-17T07:00:00', night)), 'Tue 08:00');   // последний срок окна ровно в 08:00
+  assert.equal(local(slot('2026-11-17T08:00:00', night)), 'Tue 20:00');   // после конца окна следующее начинается вечером
+  assert.equal(local(slot('2026-11-21T03:00:00', night)), 'Sat 04:00');   // субботняя ночь ещё в смене, начавшейся в пятницу
+  assert.equal(local(slot('2026-11-21T09:00:00', night)), 'Mon 20:00');   // суббота и воскресенье не начинают смену
+});
+test('«с 8 до 8» это круглые сутки', () => {
+  assert.equal(local(slot('2026-11-16T09:00:00', { from: '08:00', to: '08:00', weekdays: [1, 2, 3, 4, 5, 6, 7] })), 'Mon 10:00');
+  assert.equal(local(slot('2026-11-16T23:00:00', { from: '08:00', to: '08:00', weekdays: [1, 2, 3, 4, 5, 6, 7] })), 'Tue 00:00');
 });

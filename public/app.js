@@ -858,6 +858,7 @@ function screenReminder(noteId, existing) {
         <h3>В какое время суток</h3>
         <div class="timerow"><span>с</span><input id="ivFrom" type="time" value="${esc(iv ? iv.from : '09:00')}"><span>до</span><input id="ivTo" type="time" value="${esc(iv ? iv.to : '21:00')}"></div>
         <button type="button" class="ghost mini" id="ivAllDay">Круглые сутки</button>
+        <p class="muted small">Ночная смена: поставьте «с» позже, чем «до» (например, с 20:00 до 08:00). Дни недели считаются по дню начала.</p>
         <h3>По дням недели</h3>
         <div class="chips" id="ivDays">${WD.map((d, i) => `<button type="button" data-d="${i + 1}" class="chip ${ivDays.has(i + 1) ? 'on' : ''}">${d}</button>`).join('')}</div>
         <label class="check"><input type="checkbox" id="ivNag" ${!iv || iv.nag ? 'checked' : ''}> Повторять каждую минуту, пока не нажмёте «Готово»</label>
@@ -879,7 +880,6 @@ function screenReminder(noteId, existing) {
       const wd = [...document.querySelectorAll('#ivDays .chip.on')].map((b) => Number(b.dataset.d));
       if (!wd.length) return fail('Отметьте хотя бы один день недели.');
       if (!$('ivFrom').value || !$('ivTo').value) return fail('Укажите время «с» и «до».');
-      if ($('ivTo').value < $('ivFrom').value) return fail('Время «до» должно быть позже времени «с».');
       body.interval = { every_minutes: Number($('ivStep').value), from: $('ivFrom').value, to: $('ivTo').value, weekdays: wd, nag: $('ivNag').checked };
     } else {
       if (!body.local) return fail('Выберите дату и время.');

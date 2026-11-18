@@ -73,7 +73,7 @@ await tick();
 const first = sends()[0];
 check('в срок пришло сообщение с кнопкой «Готово»', first && /Попить воды/.test(first.body.text) && JSON.stringify(first.body.reply_markup).includes(`rd:${RID}`) && !JSON.stringify(first.body.reply_markup).includes('rs:'), JSON.stringify(first?.body));
 const [r1] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
-check('следующий срок стоит по расписанию, повторы включены', r1.nag_active === 1 && r1.nag_msg > 1000 && r1.remind_at > new Date().toISOString() && r1.nag_next > new Date().toISOString() && r1.nag_until > r1.nag_next, JSON.stringify(r1));
+check('следующий срок стоит по расписанию, повторы включены до этого срока', r1.nag_active === 1 && r1.nag_msg > 1000 && r1.remind_at > new Date().toISOString() && r1.nag_next > new Date().toISOString() && r1.nag_until === r1.remind_at, JSON.stringify(r1));
 const slotAfter = r1.remind_at;
 
 // --- повтор через минуту: старое сообщение удаляется, приходит новое ---
@@ -110,12 +110,12 @@ await tick();
 const [r4] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
 check('новый срок: прежнее сообщение заменено новым', dels().some((d) => d.body.message_id === 5555) && sends().length === 1 && r4.nag_active === 1, JSON.stringify(log.map((l) => l.method)));
 
-// --- повторы не бесконечны: до конца шага расписания ---
+// --- повторы идут до следующего срока расписания (ограничения по ночи нет) ---
 log.length = 0;
 sql(`UPDATE reminders SET nag_active = 1, nag_next = '2020-01-01T00:00:00.000Z', nag_until = '2020-01-01T00:01:00.000Z' WHERE id = ${RID}`);
 await tick();
 const [r5] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
-check('по истечении шага расписания повторы прекращаются', r5.nag_active === 0 && sends().length === 0, JSON.stringify(r5));
+check('когда срок повторов вышел (следующий срок наступил), они прекращаются', r5.nag_active === 0 && sends().length === 0, JSON.stringify(r5));
 
 // --- выключенный настойчивый режим: одно сообщение без повторов ---
 log.length = 0;

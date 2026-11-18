@@ -44,15 +44,18 @@ export function nextRecurrence({ afterIso, tz, localTime, weekdays, intervalWeek
 // ---------- «каждые N минут в окне дня» ----------
 const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
 
-// Ближайший срок строго после afterIso: в выбранные дни от начала окна с шагом everyMinutes, не позже конца окна (по местным часам)
+// Ближайший срок строго после afterIso. Окно дня задают «с» и «до» по местным часам; если «до» раньше «с» (ночная смена, например 20:00-08:00),
+// окно переходит через полночь, а день недели считается по дню, когда окно началось. Срок не позже конца окна включительно.
 export function nextIntervalSlot({ afterIso, tz, from, to, everyMinutes, weekdays }) {
   const after = utc(afterIso).setZone(tz);
-  const a = toMin(from), b = toMin(to);
-  for (let i = 0; i <= 8; i++) {
+  const a = toMin(from);
+  let b = toMin(to);
+  if (b <= a) b += 24 * 60 - (b === a ? 1 : 0); // окно через полночь; «с 8 до 8» это круглые сутки
+  for (let i = -1; i <= 8; i++) { // i = -1: окно, начавшееся вчера, ещё может идти
     const day = after.startOf('day').plus({ days: i });
     if (!weekdays.includes(day.weekday)) continue;
     for (let m = a; m <= b; m += everyMinutes) {
-      const cand = day.set({ hour: Math.floor(m / 60), minute: m % 60, second: 0, millisecond: 0 });
+      const cand = day.plus({ days: Math.floor(m / 1440) }).set({ hour: Math.floor((m % 1440) / 60), minute: m % 60, second: 0, millisecond: 0 });
       if (cand > after) return isoUtc(cand);
     }
   }
@@ -66,8 +69,7 @@ export function normalizeInterval(iv) {
   if (!Number.isFinite(every)) return null;
   const everyMinutes = clamp(Math.round(every), 10, 24 * 60);
   const from = TIME_RE.test(String(iv.from ?? '')) ? iv.from : '09:00';
-  let to = TIME_RE.test(String(iv.to ?? '')) ? iv.to : '21:00';
-  if (toMin(to) < toMin(from)) to = '23:59'; // окно «до утра» не поддерживаем: обрезаем концом суток
+  const to = TIME_RE.test(String(iv.to ?? '')) ? iv.to : '21:00';
   const wd = Array.isArray(iv.weekdays) ? [...new Set(iv.weekdays.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 7))].sort((x, y) => x - y) : [];
   return { everyMinutes, from: pad2(from), to: pad2(to), weekdays: wd.length ? wd : [1, 2, 3, 4, 5, 6, 7], nag: iv.nag === false ? false : true };
 }
