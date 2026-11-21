@@ -124,6 +124,82 @@ await tick();
 const [r6] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
 check('без настойчивого режима: одно сообщение, повторов нет', sends().length === 1 && r6.nag_active === 0, JSON.stringify(r6));
 
+// --- пауза «на сегодня» и выключение (кнопки под сообщением) ---
+const cb = (data, msgId) => hook({ callback_query: { id: 'cb' + Math.random(), from: { id: ADMIN, is_bot: false, first_name: 'T' }, chat_instance: 'x', data,
+  message: { message_id: msgId, date: 1, chat: { id: ADMIN, type: 'private' }, text: '🔔 Напоминание: Попить воды' } } });
+const edits = () => log.filter((m) => m.method === 'editMessageText');
+sql(`UPDATE reminders SET nag = 1, nag_active = 0, muted = 0, paused_until = NULL, remind_at = '2020-01-01T00:00:00.000Z' WHERE id = ${RID}`);
+log.length = 0;
+await tick(); // срок: сообщение с тремя кнопками
+const withBtns = sends()[0];
+const kb = JSON.stringify(withBtns?.body.reply_markup ?? {});
+check('под сообщением кнопки «Готово», «Пауза» и «Выключить»', kb.includes(`rd:${RID}`) && kb.includes(`rp:${RID}`) && kb.includes(`ro:${RID}`), kb);
+const [m0] = sql(`SELECT nag_msg FROM reminders WHERE id = ${RID}`);
+log.length = 0;
+await cb(`rp:${RID}`, m0.nag_msg); await wait(1200);
+const [p1] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
+check('«Пауза»: до конца сегодняшнего дня, повторы остановлены', p1.paused_until > new Date().toISOString() && p1.nag_active === 0, JSON.stringify(p1));
+check('«Пауза»: сообщение изменено на «Сегодня вас больше не побеспокоит» с кнопкой «Продолжить»', /Сегодня вас больше не побеспокоит/.test(edits()[0]?.body.text ?? '') && JSON.stringify(edits()[0]?.body.reply_markup).includes(`rp:${RID}`), JSON.stringify(edits()[0]?.body));
+log.length = 0;
+sql(`UPDATE reminders SET remind_at = '2020-01-01T00:00:00.000Z' WHERE id = ${RID}`);
+await tick();
+const [p2] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
+check('на паузе срок пропущен: сообщения нет, расписание идёт дальше', sends().length === 0 && p2.remind_at > new Date().toISOString() && p2.nag_active === 0, JSON.stringify(p2));
+log.length = 0;
+await cb(`rp:${RID}`, m0.nag_msg); await wait(1200);
+const [p3] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
+check('«Продолжить»: пауза снята', p3.paused_until === null && /Снова напоминаю/.test(edits()[0]?.body.text ?? ''), JSON.stringify(p3));
+log.length = 0;
+sql(`UPDATE reminders SET remind_at = '2020-01-01T00:00:00.000Z' WHERE id = ${RID}`);
+await tick();
+check('после паузы напоминание снова приходит', sends().length === 1);
+// пауза истекла сама (прошла полночь)
+sql(`UPDATE reminders SET paused_until = '2020-01-02T00:00:00.000Z', remind_at = '2020-01-01T00:00:00.000Z' WHERE id = ${RID}`);
+log.length = 0; await tick();
+check('пауза «на сегодня» закончилась сама: напоминание приходит', sends().length === 1);
+// выключить и включить
+const [m1] = sql(`SELECT nag_msg FROM reminders WHERE id = ${RID}`);
+log.length = 0;
+await cb(`ro:${RID}`, m1.nag_msg); await wait(1200);
+const [o1] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
+check('«Выключить»: напоминание выключено, повторы остановлены', o1.muted === 1 && o1.nag_active === 0 && /выключено/.test(edits()[0]?.body.text ?? '') && JSON.stringify(edits()[0]?.body.reply_markup).includes('Включить'), JSON.stringify(o1));
+log.length = 0;
+sql(`UPDATE reminders SET remind_at = '2020-01-01T00:00:00.000Z' WHERE id = ${RID}`);
+await tick();
+check('выключено: срок пропущен, ничего не приходит', sends().length === 0);
+log.length = 0;
+await cb(`ro:${RID}`, m1.nag_msg); await wait(1200);
+const [o2] = sql(`SELECT * FROM reminders WHERE id = ${RID}`);
+check('«Включить»: снова работает', o2.muted === 0 && /включено/.test(edits()[0]?.body.text ?? ''), JSON.stringify(o2));
+
+// --- в приложении ---
+const note0 = (await call('/api/notes')).data.notes?.[0];
+await call('/api/reminders/set', { note_id: note0.id, interval: { every_minutes: 120, from: '08:00', to: '20:00', weekdays: [1, 2, 3, 4, 5, 6, 7], nag: true } });
+const pz = await call('/api/reminders/mute', { note_id: note0.id, pause: true });
+check('приложение: пауза на сегодня', pz.status === 200 && pz.data.reminder.mute === 'today' && pz.data.reminder.recurring === true, JSON.stringify(pz.data));
+const pz2 = await call('/api/reminders/mute', { note_id: note0.id, pause: false });
+check('приложение: продолжить', pz2.data.reminder.mute === null);
+const of1 = await call('/api/reminders/mute', { note_id: note0.id, off: true });
+check('приложение: выключить', of1.data.reminder.mute === 'off');
+await call('/api/reminders/set', { note_id: note0.id, interval: { every_minutes: 60, from: '08:00', to: '20:00', weekdays: [1, 2, 3, 4, 5, 6, 7], nag: true } });
+const keep = (await call(`/api/note?id=${note0.id}`)).data.reminder;
+check('смена расписания у выключенного напоминания оставляет его выключенным', keep.mute === 'off', JSON.stringify(keep));
+const of2 = await call('/api/reminders/mute', { note_id: note0.id, off: false });
+check('приложение: включить', of2.data.reminder.mute === null);
+// обычное повторение («по дням») тоже получает кнопки, разовое нет и не приостанавливается
+await call('/api/reminders/set', { note_id: note0.id, local: new Date(Date.now() + 86400e3).toISOString().slice(0, 10) + 'T10:00', repeat: { weekdays: [1, 2, 3, 4, 5, 6, 7], interval_weeks: 1 } });
+sql(`UPDATE reminders SET remind_at = '2020-01-01T00:00:00.000Z' WHERE note_id = ${note0.id} AND status = 'pending'`);
+log.length = 0; await tick();
+const kb2 = JSON.stringify(sends()[0]?.body.reply_markup ?? {});
+check('повтор «по дням»: кнопки «Пауза» и «Выключить» добавлены к «Отложить»', kb2.includes('ro:') && kb2.includes('rp:') && kb2.includes('rs:'), kb2);
+await call('/api/reminders/set', { note_id: note0.id, local: new Date(Date.now() + 86400e3).toISOString().slice(0, 16) });
+sql(`UPDATE reminders SET remind_at = '2020-01-01T00:00:00.000Z' WHERE note_id = ${note0.id} AND status = 'pending'`);
+log.length = 0; await tick();
+const kb3 = JSON.stringify(sends()[0]?.body.reply_markup ?? {});
+check('разовое напоминание без изменений: нет кнопок «Пауза» и «Выключить»', sends().length === 1 && !kb3.includes('ro:') && !kb3.includes('rp:') && kb3.includes('rs:'), kb3);
+await call('/api/reminders/set', { note_id: note0.id, local: new Date(Date.now() + 86400e3).toISOString().slice(0, 16) });
+check('приложение: разовое не приостанавливается (409)', (await call('/api/reminders/mute', { note_id: note0.id, pause: true })).status === 409);
+
 // --- приложение: поставить и прочитать расписание ---
 const note = (await call('/api/notes')).data.notes?.[0];
 const set = await call('/api/reminders/set', { note_id: note.id, interval: { every_minutes: 60, from: '08:00', to: '20:00', weekdays: [1, 2, 3, 4, 5, 6], nag: true } });

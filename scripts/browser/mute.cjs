@@ -1,0 +1,37 @@
+// Проверка в браузере: кнопки «Пауза» и «Выключить» в карточке напоминания. Запуск: npm run check:maps
+const { chromium } = require('playwright');
+const { readFileSync } = require('fs');
+const { createHmac } = require('crypto');
+const env = Object.fromEntries(readFileSync(require('path').join(__dirname,'../../.dev.vars'),'utf8').split('\n').filter(l=>l.includes('=')).map(l=>[l.slice(0,l.indexOf('=')),l.slice(l.indexOf('=')+1)]));
+const p = new URLSearchParams({ auth_date: String(Math.floor(Date.now()/1000)), user: JSON.stringify({ id: Number(env.ADMIN_TELEGRAM_ID), first_name: 'A' }) });
+const dcs = [...p.entries()].map(([k,v])=>`${k}=${v}`).sort().join('\n');
+p.set('hash', createHmac('sha256', createHmac('sha256','WebAppData').update(env.TG_BOT_TOKEN).digest()).update(dcs).digest('hex'));
+const initData = p.toString();
+const OUT = require('os').tmpdir() + '/';
+(async () => {
+  const b = await chromium.launch();
+  const ctx = await b.newContext({ viewport: { width: 390, height: 900 }, hasTouch: true, isMobile: true, deviceScaleFactor: 1 });
+  const page = await ctx.newPage();
+  page.on('pageerror', e => console.log('PAGEERROR', e.message));
+  page.on('console', m => { if (m.type()==='error') console.log('CONSOLE', m.text()); });
+  await page.route('https://telegram.org/**', r => r.abort());
+  await page.addInitScript((d) => { window.Telegram = { WebApp: { initData: d, initDataUnsafe: {}, ready(){}, expand(){}, colorScheme:'light', onEvent(){}, BackButton:{show(){},hide(){},onClick(){}}, showConfirm:(t,cb)=>cb(true), showAlert(){} } }; }, initData);
+  await page.goto('http://localhost:8787/');
+  await page.waitForSelector('[data-tab="maps"]'); await page.waitForTimeout(500);
+  const api = (path, body) => page.evaluate(async ([d, path, body]) => (await (await fetch(path, { method: body ? 'POST' : 'GET', headers: { Authorization: 'tma ' + d, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })).json()), [initData, path, body]);
+  const nid = (await api('/api/notes')).notes[0].id;
+  await api('/api/reminders/set', { note_id: nid, interval: { every_minutes: 120, from: '08:00', to: '20:00', weekdays: [1,2,3,4,5,6], nag: true } });
+  await page.evaluate((id) => screenNote(id), nid); await page.waitForSelector('#remPause');
+  console.log('BUTTONS', await page.evaluate(() => [document.getElementById('remPause').textContent.trim(), document.getElementById('remPower').textContent.trim()].join('|')));
+  await page.screenshot({ path: OUT + 'u1.png', fullPage: true });
+  await page.tap('#remPause'); await page.waitForTimeout(800);
+  console.log('AFTER PAUSE', await page.evaluate(() => [document.getElementById('remPause').textContent.trim(), document.getElementById('muteState').textContent.trim()].join('|')));
+  await page.tap('#remPause'); await page.waitForTimeout(800);
+  await page.tap('#remPower'); await page.waitForTimeout(800);
+  console.log('AFTER OFF', await page.evaluate(() => [document.getElementById('remPower').textContent.trim(), document.getElementById('remPower').classList.contains('off'), document.getElementById('remPause').disabled].join('|')));
+  await page.screenshot({ path: OUT + 'u2.png', fullPage: true });
+  await page.tap('#remPower'); await page.waitForTimeout(800);
+  console.log('AFTER ON', await page.evaluate(() => document.getElementById('remPower').textContent.trim()));
+  await api('/api/reminders/cancel', { note_id: nid });
+  await b.close();
+})();

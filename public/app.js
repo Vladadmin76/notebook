@@ -695,7 +695,7 @@ document.addEventListener('click', (e) => {
 function noteCards(notes) {
   return notes.map((n) => `<div class="note" data-note="${n.id}">
       <div class="note-text">${linkify(esc(n.text))}</div>
-      <div class="meta">${esc(n.folder ?? '')} · ${esc(fmtDate(n.created_at))}${n.reminder ? ` · <span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat || n.reminder.interval ? ' 🔁' : ''}</span>` : ''}</div></div>`).join('');
+      <div class="meta">${esc(n.folder ?? '')} · ${esc(fmtDate(n.created_at))}${n.reminder ? ` · <span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.mute ? ' ⏸' : n.reminder.repeat || n.reminder.interval ? ' 🔁' : ''}</span>` : ''}</div></div>`).join('');
 }
 
 // ---------- папка ----------
@@ -720,7 +720,7 @@ async function screenFolder(id, name, kind = null) {
     const row = (n) => `<div class="task ${n.done ? 'done' : ''}" data-note="${n.id}">
         <button class="box" data-toggle="${n.id}" aria-label="Отметить">${n.done ? '✓' : ''}</button>
         <div class="tbody"><div class="ttext">${linkify(esc(n.text))}</div>
-          ${n.reminder ? `<div class="meta"><span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.repeat || n.reminder.interval ? ' 🔁' : ''}</span></div>` : ''}</div>
+          ${n.reminder ? `<div class="meta"><span class="badge">⏰ ${esc(n.reminder.when)}${n.reminder.mute ? ' ⏸' : n.reminder.repeat || n.reminder.interval ? ' 🔁' : ''}</span></div>` : ''}</div>
         <button class="x" data-del="${n.id}" aria-label="Удалить">✕</button></div>`;
     $('list').innerHTML = (open.map(row).join('') || `<p class="muted">${q ? 'Ничего не найдено.' : 'Невыполненных задач нет.'}</p>`)
       + (done.length ? `<div class="donebar">Выполненные · ${done.length}</div>${done.map(row).join('')}` : '');
@@ -771,6 +771,9 @@ async function screenNote(id) {
     </section>
     <section class="card"><h2>Напоминание</h2>
       ${reminder ? `<p>⏰ <b>${esc(reminder.when)}</b>${reminder.interval ? `<br><span class="muted">🔁 ${esc(reminder.interval.text)}${reminder.interval.nag ? '<br>Повторяю каждую минуту, пока не нажмёте «Готово»' : ''}</span>` : reminder.repeat ? `<br><span class="muted">🔁 ${esc(reminder.repeat.text)}</span>` : ''}</p>
+        ${reminder.recurring ? `<p class="muted small" id="muteState">${reminder.mute === 'off' ? '⏻ Выключено, пока вы не включите.' : reminder.mute === 'today' ? '⏸ На паузе до конца сегодняшнего дня.' : ''}</p>
+        <div class="btnrow mutebtns"><button class="ghost mini pausebtn ${reminder.mute === 'today' ? 'on' : ''}" id="remPause" ${reminder.mute === 'off' ? 'disabled' : ''}>${reminder.mute === 'today' ? '▶ Продолжить' : '⏸ Пауза на сегодня'}</button>
+          <button class="ghost mini pwr ${reminder.mute === 'off' ? 'off' : ''}" id="remPower" aria-label="${reminder.mute === 'off' ? 'Включить' : 'Выключить'}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/></svg> ${reminder.mute === 'off' ? 'Включить' : 'Выключить'}</button></div>` : ''}
         <div class="btnrow"><button class="ghost mini" id="remEdit">Изменить</button><button class="ghost mini danger" id="remOff">Убрать</button></div>
         <div class="btnrow"><button class="ghost mini" id="ics">В календарь (.ics)</button><button class="ghost mini" id="gcal">В Google Календарь</button></div>`
       : '<p class="muted">Не задано.</p><button class="ghost" id="remEdit">Добавить напоминание</button>'}
@@ -813,6 +816,9 @@ async function screenNote(id) {
     const r = await api('/api/notes/delete', { id });
     if (r.ok) back(); else notify(errText(r.data.error));
   };
+  const mute = async (body) => { const r = await api('/api/reminders/mute', { note_id: id, ...body }); if (r.ok) { haptic1(); screenNote(id); } else notify('Не получилось. Попробуйте ещё раз.'); };
+  if ($('remPause')) $('remPause').onclick = () => mute({ pause: reminder.mute !== 'today' });
+  if ($('remPower')) $('remPower').onclick = () => mute({ off: reminder.mute !== 'off' });
   if ($('remEdit')) $('remEdit').onclick = () => show(() => screenReminder(id, reminder));
   if ($('remOff')) $('remOff').onclick = async () => {
     const r = await api('/api/reminders/cancel', { note_id: id });

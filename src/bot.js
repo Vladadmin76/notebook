@@ -7,7 +7,7 @@ import * as trash from './trash.js';
 import { resolveStore, buildEntries, MAX_ALIASES } from './stores.js';
 import { transcribe } from './groq.js';
 import { downloadFile, TG_DOWNLOAD_LIMIT } from './telegram.js';
-import { localNowInfo, planReminder, formatWhen, describeRepeat, describeInterval, snoozeHour, tomorrowNine } from './timeutil.js';
+import { localNowInfo, planReminder, formatWhen, describeRepeat, describeInterval, snoozeHour, tomorrowNine, endOfLocalDay } from './timeutil.js';
 
 const REFUSAL = 'Бот работает по приглашению. Попросите у владельца ссылку-приглашение и откройте её в Telegram.';
 
@@ -486,7 +486,7 @@ export function createBot(env) {
     if (!list.length) return ctx.reply('Будущих напоминаний нет. Напишите, например: «завтра в 9 позвонить Ивану».');
     const nowIso = new Date().toISOString();
     const ivOf = (r) => ({ everyMinutes: r.int_minutes, from: r.win_from, to: r.win_to, weekdays: String(r.int_days).split(',').map(Number) });
-    const line = (r) => `• ${formatWhen(r.remind_at, ctx.user.tz, nowIso)}${r.int_minutes ? ` (${describeInterval(ivOf(r))})` : r.rrule ? ` (повтор: ${describeRepeat(r.rrule, r.local_time)})` : ''} — ${r.msg ?? ''}`;
+    const line = (r) => `${r.muted ? '⏻ ' : r.paused_until && r.paused_until > nowIso ? '⏸ ' : ''}• ${formatWhen(r.remind_at, ctx.user.tz, nowIso)}${r.int_minutes ? ` (${describeInterval(ivOf(r))})` : r.rrule ? ` (повтор: ${describeRepeat(r.rrule, r.local_time)})` : ''} — ${r.msg ?? ''}`;
     return ctx.reply(list.map(line).join('\n'));
   });
 
@@ -498,6 +498,41 @@ export function createBot(env) {
     if (rem && rem.int_minutes) { await db.stopNag(D, rem.id); return ctx.deleteMessage().catch(() => {}); }
     const original = ctx.callbackQuery.message?.text ?? '';
     return ctx.editMessageText(`✅ ${original.replace(/^🔔\s*/, '')}`);
+  });
+
+  // «Пауза» (до конца сегодняшнего дня, повторное нажатие продолжает) и «Выключить» (пока не включат): только у повторяющихся напоминаний
+  const pausedKb = (id) => ({ inline_keyboard: [[{ text: '▶ Продолжить', callback_data: `rp:${id}` }, { text: '⏻ Выключить', callback_data: `ro:${id}` }]] });
+  const offKb = (id) => ({ inline_keyboard: [[{ text: '⏻ Включить', callback_data: `ro:${id}` }]] });
+  const onKb = (id) => ({ inline_keyboard: [[{ text: '⏸ Пауза', callback_data: `rp:${id}` }, { text: '⏻ Выключить', callback_data: `ro:${id}` }]] });
+  const showMute = (ctx, text, r, kb) => ctx.editMessageText(`${text}: ${escapeHtml(r.msg ?? '')}`, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
+  const muteTarget = async (ctx) => {
+    const r = await db.getReminder(D, ctx.user.id, Number(ctx.match[1]));
+    if (!r || r.status !== 'pending' || !(r.rrule || r.int_minutes)) { await ctx.answerCallbackQuery({ text: 'Это напоминание уже недоступно' }); return null; }
+    return r;
+  };
+  bot.callbackQuery(/^rp:(\d+)$/, async (ctx) => {
+    const r = await muteTarget(ctx); if (!r) return;
+    if (r.muted) return ctx.answerCallbackQuery({ text: 'Напоминание выключено. Нажмите «Включить»' });
+    const nowIso = new Date().toISOString();
+    if (r.paused_until && r.paused_until > nowIso) {
+      await db.setReminderMute(D, ctx.user.id, r.id, { pausedUntil: null });
+      await ctx.answerCallbackQuery({ text: 'Продолжаю напоминать' });
+      return showMute(ctx, '▶ Снова напоминаю', r, onKb(r.id));
+    }
+    await db.setReminderMute(D, ctx.user.id, r.id, { pausedUntil: endOfLocalDay(ctx.user.tz, nowIso) });
+    await ctx.answerCallbackQuery({ text: 'Пауза до конца дня' });
+    return showMute(ctx, '⏸ Сегодня вас больше не побеспокоит', r, pausedKb(r.id));
+  });
+  bot.callbackQuery(/^ro:(\d+)$/, async (ctx) => {
+    const r = await muteTarget(ctx); if (!r) return;
+    if (r.muted) {
+      await db.setReminderMute(D, ctx.user.id, r.id, { muted: false, pausedUntil: null });
+      await ctx.answerCallbackQuery({ text: 'Включено' });
+      return showMute(ctx, '▶ Напоминание включено', r, onKb(r.id));
+    }
+    await db.setReminderMute(D, ctx.user.id, r.id, { muted: true });
+    await ctx.answerCallbackQuery({ text: 'Выключено' });
+    return showMute(ctx, '⏻ Напоминание выключено', r, offKb(r.id));
   });
 
   // «Отложить»: создаём отдельное разовое напоминание, повторяющаяся серия не страдает

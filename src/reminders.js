@@ -8,13 +8,20 @@ const BATCH = 15;
 const NAG_BATCH = 8;   // повторения «пока не нажато Готово» за один вызов
 const NAG_EVERY_SEC = 60; // на бесплатном тарифе Workers ограничено число внешних запросов за один вызов
 
-// У напоминаний «каждые N часов» только «Готово»: расписание жёсткое, откладывать нечего
-export const intervalKeyboard = (id) => ({ inline_keyboard: [[{ text: '✅ Готово', callback_data: `rd:${id}` }]] });
+// Кнопки «Пауза» (до конца сегодняшнего дня) и «Выключить» (пока не включат) у повторяющихся напоминаний
+export const muteRow = (id) => [{ text: '⏸ Пауза', callback_data: `rp:${id}` }, { text: '⏻ Выключить', callback_data: `ro:${id}` }];
 
-export const reminderKeyboard = (id) => ({ inline_keyboard: [
+// У напоминаний «каждые N часов» «Готово», «Пауза» и «Выключить»: расписание жёсткое, откладывать нечего
+export const intervalKeyboard = (id) => ({ inline_keyboard: [[{ text: '✅ Готово', callback_data: `rd:${id}` }], muteRow(id)] });
+
+export const reminderKeyboard = (id, recurring = false) => ({ inline_keyboard: [
   [{ text: '✅ Готово', callback_data: `rd:${id}` }],
   [{ text: 'Отложить на 1 час', callback_data: `rs:${id}:h` }, { text: 'До завтра 9:00', callback_data: `rs:${id}:t` }],
+  ...(recurring ? [muteRow(id)] : []),
 ] });
+
+// Напоминание сейчас молчит? (только повторяющиеся: разовых пауза не касается)
+export const isMuted = (r, nowIso) => !!(r.rrule || r.int_minutes) && (r.muted === 1 || !!(r.paused_until && r.paused_until > nowIso));
 
 // Вызывается внешним таймером раз в минуту. Возвращает число отправленных.
 export async function processTick(env, api, nowIso = new Date().toISOString()) {
@@ -34,11 +41,12 @@ export async function processTick(env, api, nowIso = new Date().toISOString()) {
       next = nextRecurrence({ afterIso: nowIso, tz: r.tz, localTime: r.local_time, weekdays, intervalWeeks, anchorDate: r.anchor_date });
     }
     if (!(await db.claimReminder(D, r, next, nowIso))) continue; // уже взят параллельным вызовом
+    if (isMuted(r, nowIso)) continue;                              // пауза или выключено: срок пропущен, расписание идёт дальше
 
     try {
       if (r.int_minutes) { await sendIntervalSlot(D, api, r, nowIso, next); sent++; continue; }
       await api.sendMessage(r.user_id, `🔔 Напоминание: ${escapeHtml(r.msg ?? '')}`,
-        { parse_mode: 'HTML', reply_markup: reminderKeyboard(r.id) });
+        { parse_mode: 'HTML', reply_markup: reminderKeyboard(r.id, !!r.rrule) });
       sent++;
     } catch (e) {
       const code = e?.error_code;
@@ -69,7 +77,7 @@ export async function processNags(env, api, nowIso = new Date().toISOString()) {
   let n = 0;
   for (const r of await db.dueNags(D, nowIso, NAG_BATCH)) {
     if (r.ustatus === 'blocked') { await db.cancelReminder(D, r.id); continue; }
-    if (nowIso >= r.nag_until) { await db.expireNag(D, r.id); continue; }
+    if (nowIso >= r.nag_until || isMuted(r, nowIso)) { await db.expireNag(D, r.id); continue; }
     const next = isoUtc(utc(nowIso).plus({ seconds: NAG_EVERY_SEC }));
     if (!(await db.claimNag(D, r, next))) continue;
     try {

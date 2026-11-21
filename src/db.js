@@ -188,7 +188,7 @@ export const getReminder = (db, userId, id) =>
               WHERE r.id = ? AND r.user_id = ?`).bind(id, userId).first();
 
 export const listPendingReminders = (db, userId, limit = 20) =>
-  db.prepare(`SELECT r.id, r.remind_at, r.rrule, r.local_time, r.tz, r.int_minutes, r.win_from, r.win_to, r.int_days, COALESCE(r.text, n.text) AS msg
+  db.prepare(`SELECT r.id, r.remind_at, r.rrule, r.local_time, r.tz, r.int_minutes, r.win_from, r.win_to, r.int_days, r.muted, r.paused_until, COALESCE(r.text, n.text) AS msg
               FROM reminders r LEFT JOIN notes n ON n.id = r.note_id
               WHERE r.user_id = ? AND r.status = 'pending' AND (n.id IS NULL OR n.deleted_at IS NULL) ORDER BY r.remind_at LIMIT ?`)
     .bind(userId, limit).all().then((r) => r.results);
@@ -200,6 +200,19 @@ export const cancelNoteReminders = (db, userId, noteId) =>
 export const hasPendingReminder = (db, userId, noteId) =>
   db.prepare(`SELECT 1 AS x FROM reminders WHERE user_id = ? AND note_id = ? AND status = 'pending' LIMIT 1`)
     .bind(userId, noteId).first().then(Boolean);
+
+// ---------- пауза и выключение (только у повторяющихся напоминаний) ----------
+// muted: 1 = выключено до ручного включения; pausedUntil: пауза «на сегодня» (ISO) или NULL. Любое отключение сразу прекращает повторы «до Готово».
+export async function setReminderMute(db, userId, id, { muted, pausedUntil }) {
+  const sets = [], vals = [];
+  if (muted !== undefined) { sets.push('muted = ?'); vals.push(muted ? 1 : 0); }
+  if (pausedUntil !== undefined) { sets.push('paused_until = ?'); vals.push(pausedUntil); }
+  if (!sets.length) return false;
+  if (muted || pausedUntil) sets.push('nag_active = 0');
+  const r = await db.prepare(`UPDATE reminders SET ${sets.join(', ')} WHERE id = ? AND user_id = ? AND status = 'pending' AND (rrule IS NOT NULL OR int_minutes IS NOT NULL)`)
+    .bind(...vals, id, userId).run();
+  return r.meta.changes === 1;
+}
 
 // ---------- настойчивый режим: повтор каждую минуту, пока не нажато «Готово» ----------
 // Начало (или новый цикл) повторов после отправки сообщения msgId; следующее повторение через минуту, но не позже nagUntil
@@ -372,7 +385,7 @@ export async function notesForApp(db, userId, { folderId = null, q = '', limit =
 export const pendingRemindersForNotes = (db, userId, noteIds) => {
   if (!noteIds.length) return Promise.resolve([]);
   const marks = noteIds.map(() => '?').join(',');
-  return db.prepare(`SELECT id, note_id, remind_at, rrule, local_time, tz, text, int_minutes, win_from, win_to, int_days, nag FROM reminders
+  return db.prepare(`SELECT id, note_id, remind_at, rrule, local_time, tz, text, int_minutes, win_from, win_to, int_days, nag, muted, paused_until FROM reminders
                      WHERE user_id = ? AND status = 'pending' AND note_id IN (${marks}) ORDER BY remind_at`)
     .bind(userId, ...noteIds).all().then((r) => r.results);
 };
@@ -403,10 +416,14 @@ export const deleteShoppingItem = (db, userId, id) =>
 
 // Заменяем напоминание заметки: старые активные отменяем, создаём новое
 export async function replaceNoteReminder(db, { userId, noteId, remindAt, rrule = null, anchorDate = null, localTime = null, tz, text = null, interval = null }) {
+  // Если расписание меняют у выключенного или приостановленного напоминания, оно остаётся выключенным или приостановленным
+  const prev = (rrule || interval) ? await db.prepare(`SELECT muted, paused_until FROM reminders WHERE user_id = ? AND note_id = ? AND status = 'pending' AND (rrule IS NOT NULL OR int_minutes IS NOT NULL) LIMIT 1`).bind(userId, noteId).first() : null;
   await db.batch([
     db.prepare(`UPDATE reminders SET status = 'cancelled', nag_active = 0 WHERE user_id = ? AND note_id = ? AND status = 'pending'`).bind(userId, noteId),
     db.prepare(`INSERT INTO reminders (user_id, note_id, remind_at, rrule, anchor_date, local_time, tz, text, status, int_minutes, win_from, win_to, int_days, nag)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`).bind(userId, noteId, remindAt, rrule, anchorDate, localTime, tz, text, ...ivCols(interval)),
+    ...(prev && (prev.muted || prev.paused_until)
+      ? [db.prepare(`UPDATE reminders SET muted = ?, paused_until = ? WHERE id = last_insert_rowid()`).bind(prev.muted, prev.paused_until)] : []),
   ]);
 }
 

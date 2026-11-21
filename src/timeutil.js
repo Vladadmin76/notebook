@@ -158,6 +158,9 @@ export function describeRepeat(rrule, localTime) {
   return `${days}${every} в ${localTime}`;
 }
 
+// Конец сегодняшнего дня по местному времени человека (для паузы «на сегодня»)
+export const endOfLocalDay = (tz, nowIso) => isoUtc(utc(nowIso).setZone(tz).plus({ days: 1 }).startOf('day'));
+
 export const snoozeHour = (nowIso) => isoUtc(utc(nowIso).plus({ hours: 1 }));
 export function tomorrowNine(tz, nowIso) {
   return isoUtc(utc(nowIso).setZone(tz).plus({ days: 1 }).set({ hour: 9, minute: 0, second: 0, millisecond: 0 }));

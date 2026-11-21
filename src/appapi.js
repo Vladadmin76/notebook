@@ -4,7 +4,7 @@ import { DateTime } from 'luxon';
 import * as db from './db.js';
 import { json } from './util.js';
 import { LIMITS } from './config.js';
-import { utc, isoUtc, planReminder, nextRecurrence, parseRrule, describeRepeat, describeInterval, formatWhen } from './timeutil.js';
+import { utc, isoUtc, planReminder, nextRecurrence, parseRrule, describeRepeat, describeInterval, formatWhen, endOfLocalDay } from './timeutil.js';
 import { buildIcs, googleCalendarUrl, signIcs } from './ics.js';
 import * as trash from './trash.js';
 import * as maps from './maps.js';
@@ -22,6 +22,9 @@ function reminderView(r, tz, nowIso) {
     id: r.id, at: r.remind_at, local: local.toFormat("yyyy-MM-dd'T'HH:mm"),
     when: formatWhen(r.remind_at, tz, nowIso),
     repeat: parsed ? { weekdays: parsed.weekdays, interval_weeks: parsed.intervalWeeks, text: describeRepeat(r.rrule, r.local_time) } : null,
+    recurring: !!(r.rrule || r.int_minutes),
+    // пауза «на сегодня» или «выключено»; у разовых напоминаний этого нет
+    mute: !(r.rrule || r.int_minutes) ? null : r.muted ? 'off' : (r.paused_until && r.paused_until > nowIso ? 'today' : null),
     interval: r.int_minutes ? (() => {
       const iv = { everyMinutes: r.int_minutes, from: r.win_from, to: r.win_to, weekdays: String(r.int_days).split(',').map(Number) };
       return { every_minutes: iv.everyMinutes, from: iv.from, to: iv.to, weekdays: iv.weekdays, nag: !!r.nag, text: describeInterval(iv) };
@@ -112,6 +115,20 @@ export async function handleAppApi({ request, env, url, user, body }) {
   }
   if (path === '/api/notes/delete' && post) {
     return (await db.deleteNote(D, user.id, intOr(body.id))) ? json({ ok: true }) : json({ error: 'not_found' }, 404);
+  }
+
+  // ---------- пауза и выключение повторяющегося напоминания ----------
+  if (path === '/api/reminders/mute' && post) {
+    const note = await db.getNote(D, user.id, intOr(body.note_id));
+    if (!note) return json({ error: 'not_found' }, 404);
+    const [r] = await db.pendingRemindersForNotes(D, user.id, [note.id]);
+    if (!r) return json({ error: 'no_reminder' }, 404);
+    if (!(r.rrule || r.int_minutes)) return json({ error: 'not_recurring' }, 409); // разовые напоминания не приостанавливаются
+    if (body.off !== undefined) await db.setReminderMute(D, user.id, r.id, body.off ? { muted: true } : { muted: false, pausedUntil: null });
+    else if (body.pause !== undefined) await db.setReminderMute(D, user.id, r.id, { pausedUntil: body.pause ? endOfLocalDay(tz, nowIso) : null });
+    else return json({ error: 'bad_request' }, 400);
+    const [r2] = await db.pendingRemindersForNotes(D, user.id, [note.id]);
+    return json({ reminder: reminderView(r2, tz, nowIso) });
   }
 
   // ---------- интеллект-карты ----------
