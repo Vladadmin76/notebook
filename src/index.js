@@ -60,6 +60,8 @@ async function handleApi(request, env, url, ctx) {
       ctx.waitUntil(getBot(env).bot.api.sendMessage(Number(env.ADMIN_TELEGRAM_ID),
         `Новый человек в Блокноте: ${label} (в Telegram: ${tgUser.first_name ?? 'без имени'}, ${body.tz}).`).catch(() => {}));
     }
+    // Telegram уже знает, что человек разрешил боту писать (нажимал Start или открыл по ссылке с разрешением): подключаем бота сразу, без окна
+    if (tgUser.allows_write_to_pm && (await connectBot(env, D, tgUser.id))) return json({ state: 'user', user: pub(await db.getUser(D, tgUser.id)) });
     return json({ state: 'user', user: pub(res.user) });
   }
 
@@ -82,13 +84,7 @@ async function handleApi(request, env, url, ctx) {
 
   // --- «Подключить бота»: после согласия в окне Telegram проверяем, что бот реально может написать ---
   if (path === '/api/connect-bot' && request.method === 'POST') {
-    try {
-      await getBot(env).bot.api.sendMessage(user.id,
-        'Бот подключён. Пишите или наговаривайте сюда заметки, а приложение открывается кнопкой «Блокнот» внизу слева.');
-    } catch {
-      return json({ ok: false });
-    }
-    await db.markCanWrite(D, user.id);
+    if (!(await connectBot(env, D, user.id))) return json({ ok: false });
     return json({ ok: true, user: pub(await db.getUser(D, user.id)) });
   }
 
@@ -136,6 +132,18 @@ async function handleApi(request, env, url, ctx) {
   }
 
   return json({ error: 'not_found' }, 404);
+}
+
+// Проверяем, что бот реально может написать человеку (приветствие и есть проверка), и отмечаем это
+async function connectBot(env, D, userId) {
+  try {
+    await getBot(env).bot.api.sendMessage(userId,
+      'Бот подключён. Пишите или наговаривайте сюда заметки, а приложение открывается кнопкой «Блокнот» внизу слева.');
+  } catch {
+    return false;
+  }
+  await db.markCanWrite(D, userId);
+  return true;
 }
 
 const pub = (u) => ({ label: u.label, tz: u.tz, theme: u.theme, can_write: !!u.can_write, is_admin: !!u.is_admin });

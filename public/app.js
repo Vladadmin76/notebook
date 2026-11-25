@@ -47,6 +47,17 @@ function screenMessage(title, text) {
   h(`<section class="card"><h1>${esc(title)}</h1><p>${esc(text)}</p></section>`);
 }
 
+// Окно Telegram «Разрешить боту писать вам?»: ответ true, если разрешили. Если Telegram уже знает о разрешении, окна нет (сервер подключит бота сам);
+// если способа нет (старый Telegram) или ответа нет целую минуту, считаем «нет»: кнопка в настройках остаётся.
+function askWriteAccess() {
+  return new Promise((resolve) => {
+    const u = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    if (!tg || !tg.requestWriteAccess || (u && u.allows_write_to_pm)) return resolve(false);
+    const t = setTimeout(() => resolve(false), 60000);
+    try { tg.requestWriteAccess((ok) => { clearTimeout(t); resolve(!!ok); }); } catch { clearTimeout(t); resolve(false); }
+  });
+}
+
 // ---------- знакомство ----------
 function screenJoin(invite) {
   const bad = {
@@ -71,9 +82,16 @@ function screenJoin(invite) {
     err.hidden = true;
     if (!name) { err.textContent = 'Введите имя.'; err.hidden = false; return; }
     $('go').disabled = true;
+    // Одно нажатие: вход и просьба разрешить боту писать. Окно разрешения рисует сам Telegram, скрыть его нельзя.
+    const allowed = askWriteAccess();
     const r = await api('/api/join', { name, tz: browserTz, code: startParam });
     $('go').disabled = false;
-    if (r.ok) { me = r.data.user; applyTheme(me.theme); return screenMain(); }
+    if (r.ok) {
+      me = r.data.user; applyTheme(me.theme);
+      // Когда человек ответит в окне Telegram, подключаем бота; отказ ничего не ломает, кнопка остаётся в настройках
+      allowed.then(async (ok) => { if (ok && !me.can_write) { const c = await api('/api/connect-bot', {}); if (c.ok && c.data.ok) me = c.data.user; } });
+      return screenMain();
+    }
     const msgs = {
       bad_name: 'Имя может содержать буквы, цифры, пробел, точку и дефис (до 40 знаков).',
       label_taken: 'Такое имя уже занято. Добавьте фамилию, например «Олег Иванов».',

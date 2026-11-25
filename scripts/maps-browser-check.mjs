@@ -6,6 +6,7 @@ const want = {
   color: [/MENU items Изменить название\|Добавить ветку\|Изменить цвет\|Добавить точки\|Удалить окошко\|Отмена/, /SWATCHES 11/, /NODE \[ 'rgb\(229, 72, 77\)'/],
   link: [/DOTS 4 stop button true/, /HIGHLIGHT 1/, /EDGES1 a>b/, /TOAST Между ними уже есть линия/, /HIGHLIGHT2 \[ 'Четыре' \]/, /THREAD still in hand true/, /EDGES3 a>b,a>d/, /FROZEN true/, /STOP dots 0 fit button true/],
   mute: [/BUTTONS ⏸ Пауза на сегодня\|Выключить/, /AFTER PAUSE ▶ Продолжить\|⏸ На паузе до конца сегодняшнего дня\./, /AFTER OFF Включить\|true\|true/, /AFTER ON Выключить/],
+  join: [/ALLOW \{"calls":1,"can_write":true,"entered":true\}/, /DENY \{"calls":1,"can_write":false,"entered":true\}/, /KNOWN \{"calls":0,"can_write":true,"entered":true\}/],
   list: [/SWIPE open: true/, /DELETED by swipe: 1/, /HOLD open: true/, /TAP on open closes: true/, /TAP opens map: true/],
 };
 let bad = 0;
